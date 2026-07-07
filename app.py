@@ -86,6 +86,17 @@ def get_faixa(c):
 def set_faixa(c, valor):
     c.table("config").upsert({"chave": "faixa_neutra_pct", "valor": str(valor)}, on_conflict="chave").execute()
 
+def ler_tudo(c, tabela, ano):
+    """Le todas as linhas de uma tabela para o ano, paginando de 1000 em 1000."""
+    linhas, passo, ini = [], 1000, 0
+    while True:
+        lote = c.table(tabela).select("*").eq("ano", ano).range(ini, ini + passo - 1).execute().data or []
+        linhas.extend(lote)
+        if len(lote) < passo:
+            break
+        ini += passo
+    return linhas
+
 def perfil(c, email):
     r = c.table("gestor_usuario").select("gestor_codigo, gestor(nome, papel)").eq("email", email).execute()
     if not r.data: return None
@@ -334,7 +345,7 @@ def tela_acompanhamento(c, prof):
     is_ctrl = prof["papel"] == "controladoria"
     header(prof)
     banda = get_faixa(c)
-    orc = c.table("orc_realizado").select("*").eq("ano", 2026).execute().data or []
+    orc = ler_tudo(c, "orc_realizado", 2026)
     if not orc:
         st.info("Nenhum dado carregado ainda." + (" Use 'Importar dados'." if is_ctrl else " Fale com a controladoria.")); return
     df = pd.DataFrame(orc)
