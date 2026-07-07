@@ -375,44 +375,51 @@ def tela_painel(c, prof):
 
     js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
 
-    # mapa CR -> (gestor, nome do CR)
+    # mapa CR -> (gestor, nome do CR)  [chave sempre inteira, para casar entre tabelas]
     cg = {}
     for r in (c.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []):
-        cg[(r["uni_cod"], r["cr_cod"])] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
+        cg[(int(r["uni_cod"]), int(r["cr_cod"]))] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
 
     # ----- Gerência de pendências (desvios desfavoráveis ainda não enviados) -----
-    orc = ler_tudo(c, "orc_realizado", 2026)
-    dfo = pd.DataFrame(orc)
+    dfo = pd.DataFrame(ler_tudo(c, "orc_realizado", 2026))
     dfo = dfo[dfo["mes"] == mes]
     banda = get_faixa(c)
-    enviadas = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
-    devolvidas = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]) for j in js if j.get("status") == "DEVOLVIDO"}
-    pend_por_gestor = {}
+    enviadas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
+    devolvidas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") == "DEVOLVIDO"}
+    # agrega pendências por gestor -> lista de contas
+    pend = {}   # gestor -> {"n","valor","devolv","itens":[...]}
     for _, v in dfo.iterrows():
         raw, pct = var_de(v["valor_planejado"], v["valor_realizado"])
         lab, _ = classifica(raw, pct, v["conta_cod"], banda)
         if lab != "Desfavorável":
             continue
-        chave = (v["uni_cod"], v["cr_cod"], v["conta_cod"])
+        chave = (int(v["uni_cod"]), int(v["cr_cod"]), int(v["conta_cod"]))
         if chave in enviadas:
             continue
-        gestor, _crn = cg.get((v["uni_cod"], v["cr_cod"]), ("—", ""))
-        dd = pend_por_gestor.setdefault(gestor, {"n": 0, "valor": 0.0, "devolv": 0})
-        dd["n"] += 1; dd["valor"] += raw
-        if chave in devolvidas:
-            dd["devolv"] += 1
+        gestor, _crn = cg.get((int(v["uni_cod"]), int(v["cr_cod"])), ("Sem gestor", ""))
+        d = pend.setdefault(gestor, {"n": 0, "valor": 0.0, "devolv": 0, "itens": []})
+        d["n"] += 1; d["valor"] += raw
+        dev = chave in devolvidas
+        if dev: d["devolv"] += 1
+        d["itens"].append({"cr": v.get("cr_nome", ""), "conta": f"{v['conta_cod']} · {v.get('conta_desc','')}", "raw": raw, "dev": dev})
+
     st.markdown("###### Pendências por gestor (desvios desfavoráveis ainda não justificados)")
-    if pend_por_gestor:
-        linhas = ""
-        for gestor in sorted(pend_por_gestor, key=lambda g: -pend_por_gestor[g]["valor"]):
-            dd = pend_por_gestor[gestor]
-            linhas += (f"<tr><td>{gestor}</td><td>{dd['n']}</td>"
-                       f"<td style='color:{VERMELHO}'>{dd['devolv']}</td>"
-                       f"<td style='color:{VERMELHO}'>{brl(dd['valor'])}</td></tr>")
-        st.markdown(f"""<table class="lle"><tr><th>Gestor</th><th>A justificar</th>
-            <th>Devolvidas</th><th>Desvio parado (R$)</th></tr>{linhas}</table>""", unsafe_allow_html=True)
-    else:
+    if not pend:
         st.success("Nenhuma pendência neste mês — todos os desvios desfavoráveis foram justificados.")
+    else:
+        total = sum(d["valor"] for d in pend.values())
+        st.caption(f"Total: {sum(d['n'] for d in pend.values())} conta(s) · {brl(total)} de desvio parado")
+        for gestor in sorted(pend, key=lambda g: -pend[g]["valor"]):
+            d = pend[gestor]
+            titulo = f"{gestor} — {d['n']} conta(s) · {brl(d['valor'])}" + (f" · {d['devolv']} devolvida(s)" if d["devolv"] else "")
+            with st.expander(titulo):
+                linhas = ""
+                for it in sorted(d["itens"], key=lambda x: -x["raw"]):
+                    tag = " (devolvida)" if it["dev"] else ""
+                    linhas += (f"<tr><td>{it['cr']}</td><td>{it['conta']}{tag}</td>"
+                               f"<td style='color:{VERMELHO}'>{brl(it['raw'])}</td></tr>")
+                st.markdown(f"""<table class="lle"><tr><th>Centro de resultado</th><th>Conta</th>
+                    <th>Desvio (R$)</th></tr>{linhas}</table>""", unsafe_allow_html=True)
     st.divider()
 
     if not js:
