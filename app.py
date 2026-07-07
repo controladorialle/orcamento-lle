@@ -374,22 +374,11 @@ def tela_painel(c, prof):
     mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026")
 
     js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
-    if not js:
-        st.info(f"Nenhuma justificativa registrada em {MESES[mes]}/2026."); return
 
     # mapa CR -> (gestor, nome do CR)
     cg = {}
     for r in (c.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []):
         cg[(r["uni_cod"], r["cr_cod"])] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
-
-    linhas = []
-    for j in js:
-        gestor, cr_nome = cg.get((j["uni_cod"], j["cr_cod"]), ("—", str(j["cr_cod"])))
-        linhas.append({"gestor": gestor, "cr": cr_nome, "conta": j["conta_cod"],
-                       "status": j.get("status", "PENDENTE"), "texto": j.get("texto", "") or "",
-                       "comentario": j.get("comentario_controladoria", "") or "",
-                       "_k": (j["uni_cod"], j["cr_cod"], j["conta_cod"])})
-    df = pd.DataFrame(linhas)
 
     # ----- Gerência de pendências (desvios desfavoráveis ainda não enviados) -----
     orc = ler_tudo(c, "orc_realizado", 2026)
@@ -425,6 +414,19 @@ def tela_painel(c, prof):
     else:
         st.success("Nenhuma pendência neste mês — todos os desvios desfavoráveis foram justificados.")
     st.divider()
+
+    if not js:
+        st.info(f"Ainda não há justificativas enviadas em {MESES[mes]}/2026. As pendências acima mostram o que falta.")
+        return
+
+    linhas = []
+    for j in js:
+        gestor, cr_nome = cg.get((j["uni_cod"], j["cr_cod"]), ("—", str(j["cr_cod"])))
+        linhas.append({"gestor": gestor, "cr": cr_nome, "conta": j["conta_cod"],
+                       "status": j.get("status", "PENDENTE"), "texto": j.get("texto", "") or "",
+                       "comentario": j.get("comentario_controladoria", "") or "",
+                       "_k": (j["uni_cod"], j["cr_cod"], j["conta_cod"])})
+    df = pd.DataFrame(linhas)
 
     # resumo por gestor
     st.markdown("###### Resumo por gestor")
