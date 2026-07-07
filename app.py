@@ -76,6 +76,16 @@ def client():
         except Exception: pass
     return c
 
+def get_faixa(c):
+    try:
+        r = c.table("config").select("valor").eq("chave", "faixa_neutra_pct").execute()
+        return float(r.data[0]["valor"]) if r.data else 2.0
+    except Exception:
+        return 2.0
+
+def set_faixa(c, valor):
+    c.table("config").upsert({"chave": "faixa_neutra_pct", "valor": str(valor)}, on_conflict="chave").execute()
+
 def perfil(c, email):
     r = c.table("gestor_usuario").select("gestor_codigo, gestor(nome, papel)").eq("email", email).execute()
     if not r.data: return None
@@ -257,6 +267,13 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
 
 # ---------------------------------------------------------------- importar
 def tela_importar(c):
+    st.subheader("Configuração")
+    atual = get_faixa(c)
+    nova = st.number_input("Faixa neutra (±%) — regra de classificação para todos os gestores",
+                           value=float(atual), step=0.5, min_value=0.0)
+    if st.button("Salvar faixa neutra"):
+        set_faixa(c, nova); st.success(f"Faixa neutra atualizada para ±{nova:.1f}%.".replace(".", ","))
+    st.divider()
     st.subheader("Importar dados")
     st.caption("A base orçado x realizado atualiza os números; o arquivo operacional traz o histórico das notas.")
     ano = st.number_input("Ano", value=2026, step=1)
@@ -316,6 +333,7 @@ def tela_importar(c):
 def tela_acompanhamento(c, prof):
     is_ctrl = prof["papel"] == "controladoria"
     header(prof)
+    banda = get_faixa(c)
     orc = c.table("orc_realizado").select("*").eq("ano", 2026).execute().data or []
     if not orc:
         st.info("Nenhum dado carregado ainda." + (" Use 'Importar dados'." if is_ctrl else " Fale com a controladoria.")); return
@@ -330,9 +348,10 @@ def tela_acompanhamento(c, prof):
 
     with st.sidebar:
         st.markdown(f"<div style='text-align:center'>{LOGO}</div>", unsafe_allow_html=True)
-        st.markdown(f"**{prof['nome']}**"); st.caption("Controladoria" if is_ctrl else "Gestor"); st.divider()
+        st.markdown(f"**{prof['nome']}**"); st.caption("Controladoria" if is_ctrl else "Gestor")
+        st.caption(f"Faixa neutra vigente: ±{banda:.1f}%".replace(".", ","))
+        st.divider()
         mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026")
-        banda = st.number_input("Faixa neutra (±%)", value=2.0, step=0.5, min_value=0.0)
         st.markdown("**Filtros**")
         if is_ctrl and resp_map:
             df = df.copy(); df["_resp"] = df.apply(lambda r: resp_map.get((r["uni_cod"], r["cr_cod"]), "—"), axis=1)
