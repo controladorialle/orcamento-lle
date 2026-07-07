@@ -86,6 +86,16 @@ def get_faixa(c):
 def set_faixa(c, valor):
     c.table("config").upsert({"chave": "faixa_neutra_pct", "valor": str(valor)}, on_conflict="chave").execute()
 
+def get_cobranca(c):
+    try:
+        r = c.table("config").select("valor").eq("chave", "mes_inicio_cobranca").execute()
+        return int(float(r.data[0]["valor"])) if r.data else 1
+    except Exception:
+        return 1
+
+def set_cobranca(c, mes):
+    c.table("config").upsert({"chave": "mes_inicio_cobranca", "valor": str(int(mes))}, on_conflict="chave").execute()
+
 def ler_tudo(c, tabela, ano):
     """Le todas as linhas de uma tabela para o ano, paginando de 1000 em 1000."""
     linhas, passo, ini = [], 1000, 0
@@ -252,6 +262,9 @@ def top5(df_mes, banda):
 
 # ---------------------------------------------------------------- justificativas
 def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
+    if mes < get_cobranca(c):
+        st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
+        return
     js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
     jmap = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]): j for j in js}
     itens = []
@@ -312,6 +325,12 @@ def tela_importar(c):
                            value=float(atual), step=0.5, min_value=0.0)
     if st.button("Salvar faixa neutra"):
         set_faixa(c, nova); st.success(f"Faixa neutra atualizada para ±{nova:.1f}%.".replace(".", ","))
+    st.markdown("**Cobrança de justificativas**")
+    mc = get_cobranca(c)
+    novo_mc = st.selectbox("Cobrar justificativas a partir do mês (2026)", list(range(1, 13)), index=mc - 1, format_func=lambda m: MESES[m])
+    st.caption("Meses anteriores a este não geram pendência nem cobrança (continuam visíveis nas análises).")
+    if st.button("Salvar início da cobrança"):
+        set_cobranca(c, novo_mc); st.success(f"Cobrança a partir de {MESES[novo_mc]}/2026.")
     st.divider()
     st.subheader("Importar dados")
     st.caption("A base orçado x realizado atualiza os números; o arquivo operacional traz o histórico das notas.")
@@ -381,6 +400,9 @@ def tela_painel(c, prof):
         cg[(int(r["uni_cod"]), int(r["cr_cod"]))] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
 
     # ----- Gerência de pendências (desvios desfavoráveis ainda não enviados) -----
+    if mes < get_cobranca(c):
+        st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
+        return
     dfo = pd.DataFrame(ler_tudo(c, "orc_realizado", 2026))
     dfo = dfo[dfo["mes"] == mes]
     banda = get_faixa(c)
@@ -579,7 +601,9 @@ def tela_acompanhamento(c, prof):
     d_ytd = df[df["mes"] <= mes]
 
     # pendências do mês (para o aviso do gestor): desvio desfavorável ainda não enviado
-    if not is_ctrl:
+    if not is_ctrl and mes < get_cobranca(c):
+        st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
+    elif not is_ctrl:
         js = c.table("justificativa").select("uni_cod,cr_cod,conta_cod,status").eq("ano", 2026).eq("mes", mes).execute().data or []
         enviadas = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
         pend = 0
