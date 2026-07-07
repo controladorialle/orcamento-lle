@@ -98,12 +98,40 @@ def ler_tudo(c, tabela, ano):
     return linhas
 
 def perfil(c, email):
-    r = c.table("gestor_usuario").select("gestor_codigo, gestor(nome, papel)").eq("email", email).execute()
+    r = c.table("gestor_usuario").select("gestor_codigo, senha_provisoria, gestor(nome, papel)").eq("email", email).execute()
     if not r.data: return None
     g = r.data[0].get("gestor") or {}
-    return {"gestor_codigo": r.data[0]["gestor_codigo"], "nome": g.get("nome", email), "papel": g.get("papel", "gestor")}
+    return {"gestor_codigo": r.data[0]["gestor_codigo"], "nome": g.get("nome", email),
+            "papel": g.get("papel", "gestor"), "senha_provisoria": bool(r.data[0].get("senha_provisoria", False))}
 
 # ---------------------------------------------------------------- login
+def tela_trocar_senha(c, email):
+    inject_css()
+    _, c2, _ = st.columns([1, 1.3, 1])
+    with c2:
+        st.markdown(f"<div style='text-align:center; padding:20px 0 6px;'>{LOGO}</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("##### Defina sua senha")
+            st.caption("Este é seu primeiro acesso. Crie uma senha pessoal para continuar.")
+            with st.form("trocar"):
+                s1 = st.text_input("Nova senha (mínimo 6 caracteres)", type="password")
+                s2 = st.text_input("Confirme a nova senha", type="password")
+                ok = st.form_submit_button("Salvar e entrar", type="primary", use_container_width=True)
+            if ok:
+                if len(s1) < 6:
+                    st.error("A senha precisa ter ao menos 6 caracteres.")
+                elif s1 != s2:
+                    st.error("As duas senhas não conferem.")
+                else:
+                    try:
+                        c.auth.update_user({"password": s1})
+                        c.table("gestor_usuario").update({"senha_provisoria": False}).eq("email", email).execute()
+                        st.success("Senha definida! Recarregando...")
+                        st.rerun()
+                    except Exception:
+                        st.error("Não consegui salvar a senha. Saia e entre novamente para tentar.")
+
+
 def tela_login():
     inject_css()
     _, c2, _ = st.columns([1, 1.3, 1])
@@ -340,6 +368,58 @@ def tela_importar(c):
             c.table("operacional_detalhe").insert(ch).execute()
         st.success(f"{len(recs)} lançamentos com histórico importados.")
 
+def tela_painel(c, prof):
+    header(prof)
+    st.subheader("Justificativas recebidas")
+    mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026")
+
+    js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
+    if not js:
+        st.info(f"Nenhuma justificativa registrada em {MESES[mes]}/2026."); return
+
+    # mapa CR -> (gestor, nome do CR)
+    cg = {}
+    for r in (c.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []):
+        cg[(r["uni_cod"], r["cr_cod"])] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
+
+    linhas = []
+    for j in js:
+        gestor, cr_nome = cg.get((j["uni_cod"], j["cr_cod"]), ("—", str(j["cr_cod"])))
+        linhas.append({"gestor": gestor, "cr": cr_nome, "conta": j["conta_cod"],
+                       "status": j.get("status", "PENDENTE"), "texto": j.get("texto", "") or "",
+                       "comentario": j.get("comentario_controladoria", "") or "",
+                       "_k": (j["uni_cod"], j["cr_cod"], j["conta_cod"])})
+    df = pd.DataFrame(linhas)
+
+    # resumo por gestor
+    st.markdown("###### Resumo por gestor")
+    resumo = ""
+    for gestor in sorted(df["gestor"].unique()):
+        sub = df[df["gestor"] == gestor]
+        cnt = {s: int((sub["status"] == s).sum()) for s in STATUS_LABEL}
+        resumo += (f"<tr><td>{gestor}</td><td>{len(sub)}</td>"
+                   f"<td style='color:{VERMELHO}'>{cnt['PENDENTE']+cnt['DEVOLVIDO']}</td>"
+                   f"<td style='color:{AZUL_CORP}'>{cnt['JUSTIFICADO']+cnt['EM_REVISAO']}</td>"
+                   f"<td style='color:{VERDE}'>{cnt['APROVADO']}</td></tr>")
+    st.markdown(f"""<table class="lle"><tr><th>Gestor</th><th>Total</th>
+        <th>A responder</th><th>Aguardando controladoria</th><th>Aprovadas</th></tr>{resumo}</table>""", unsafe_allow_html=True)
+
+    # detalhe por gestor -> centro de resultado
+    st.markdown("###### Detalhe por gestor e centro de resultado")
+    for gestor in sorted(df["gestor"].unique()):
+        sub = df[df["gestor"] == gestor]
+        with st.expander(f"{gestor} — {len(sub)} justificativa(s)"):
+            for cr in sorted(sub["cr"].unique()):
+                st.markdown(f"**{cr}**")
+                linhas2 = ""
+                for _, r in sub[sub["cr"] == cr].iterrows():
+                    st_lab = STATUS_LABEL.get(r["status"])
+                    cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT}.get(r["status"], AZUL_CORP)
+                    txt = (r["texto"][:120] + "…") if len(r["texto"]) > 120 else (r["texto"] or "—")
+                    linhas2 += f"<tr><td>{r['conta']}</td><td style='color:{cor}'>{st_lab}</td><td style='text-align:left'>{txt}</td></tr>"
+                st.markdown(f"""<table class="lle"><tr><th>Conta</th><th>Situação</th>
+                    <th style='text-align:left'>Justificativa</th></tr>{linhas2}</table>""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------------- acompanhamento
 def tela_acompanhamento(c, prof):
     is_ctrl = prof["papel"] == "controladoria"
@@ -415,9 +495,12 @@ def main():
         st.error("Seu e-mail não está cadastrado. Fale com a controladoria.")
         if st.button("Sair"): st.session_state.clear(); st.rerun()
         return
+    if prof.get("senha_provisoria"):
+        tela_trocar_senha(c, st.session_state.get("email", "")); return
     if prof["papel"] == "controladoria":
-        aba = st.sidebar.radio("Menu", ["Acompanhamento", "Importar dados"])
+        aba = st.sidebar.radio("Menu", ["Acompanhamento", "Justificativas recebidas", "Importar dados"])
         if aba == "Importar dados": header(prof); tela_importar(c); return
+        if aba == "Justificativas recebidas": tela_painel(c, prof); return
     tela_acompanhamento(c, prof)
 
 main()
