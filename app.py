@@ -179,15 +179,15 @@ def tela_justificativas(c, prof):
 
             # ---- gestor
             if not is_ctrl and status in ("PENDENTE", "DEVOLVIDO"):
-                txt = st.text_area("Justificativa", value=j.get("texto", "") or "",
-                                   key=f"txt_{v['uni_cod']}_{v['cr_cod']}_{v['conta_cod']}")
+                _kb = f"{mes}_{v['uni_cod']}_{v['cr_cod']}_{v['conta_cod']}"
+                txt = st.text_area("Justificativa", value=j.get("texto", "") or "", key=f"txt_{_kb}")
                 c1, c2 = st.columns(2)
-                if c1.button("Salvar rascunho", key=f"sv_{v['cr_cod']}_{v['conta_cod']}"):
+                if c1.button("Salvar rascunho", key=f"sv_{_kb}"):
                     c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE",
                                                      "atualizado_por": prof["nome"]},
                                                     on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute()
                     st.rerun()
-                if c2.button("Enviar justificativa", key=f"en_{v['cr_cod']}_{v['conta_cod']}", type="primary"):
+                if c2.button("Enviar justificativa", key=f"en_{_kb}", type="primary"):
                     if not txt.strip():
                         st.error("Escreva a justificativa antes de enviar.")
                     else:
@@ -201,14 +201,15 @@ def tela_justificativas(c, prof):
 
             # ---- controladoria
             if is_ctrl:
+                _kb = f"{mes}_{v['uni_cod']}_{v['cr_cod']}_{v['conta_cod']}"
                 st.info(f"Justificativa do gestor: {j.get('texto') or '— (ainda não enviada)'}")
                 if status in ("JUSTIFICADO", "EM_REVISAO"):
-                    coment = st.text_input("Comentário (para devolução)", key=f"cm_{v['cr_cod']}_{v['conta_cod']}")
+                    coment = st.text_input("Comentário (para devolução)", key=f"cm_{_kb}")
                     c1, c2 = st.columns(2)
-                    if c1.button("Aprovar", key=f"ap_{v['cr_cod']}_{v['conta_cod']}", type="primary"):
+                    if c1.button("Aprovar", key=f"ap_{_kb}", type="primary"):
                         c.table("justificativa").update({"status": "APROVADO"}).match(key).execute()
                         st.rerun()
-                    if c2.button("Devolver", key=f"dv_{v['cr_cod']}_{v['conta_cod']}"):
+                    if c2.button("Devolver", key=f"dv_{_kb}"):
                         c.table("justificativa").update({"status": "DEVOLVIDO",
                                                          "comentario_controladoria": coment}).match(key).execute()
                         st.rerun()
