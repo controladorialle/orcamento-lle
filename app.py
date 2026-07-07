@@ -27,9 +27,11 @@ def norm(s):
     return unicodedata.normalize("NFD", str(s)).encode("ascii", "ignore").decode().lower().strip()
 
 def num(x):
+    if x is None or pd.isna(x):
+        return 0.0
     if isinstance(x, (int, float)):
         return float(x)
-    s = str(x or "").replace("R$", "").strip()
+    s = str(x).replace("R$", "").strip()
     if not s:
         return 0.0
     if "," in s:
@@ -38,6 +40,18 @@ def num(x):
         return float(s)
     except ValueError:
         return 0.0
+
+def to_int(x):
+    """Converte para inteiro; devolve None se vazio/invalido (linha e ignorada)."""
+    if x is None or pd.isna(x):
+        return None
+    s = str(x).strip()
+    if not s:
+        return None
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
 
 def extrai_hist(h):
     if not isinstance(h, str):
@@ -220,13 +234,16 @@ def tela_importar(c):
         recs = []
         for _, r in df.iterrows():
             conta = pick(r, ["codigo conta"])
-            if pd.isna(conta) or str(conta).strip() == "":
+            uni_cod = to_int(pick(r, ["codigo unidade"]))
+            cr_cod = to_int(pick(r, ["codigo centro"]))
+            conta_cod = to_int(conta)
+            if None in (uni_cod, cr_cod, conta_cod):
                 continue
             recs.append(dict(
-                ano=int(pick(r, ["ano"]) or ano), mes=int(pick(r, ["mes"]) or 1),
-                uni_cod=int(pick(r, ["codigo unidade"])), unidade=str(pick(r, ["descricao unidade"]) or ""),
-                cr_cod=int(pick(r, ["codigo centro"])), cr_nome=str(pick(r, ["descricao centro"]) or ""),
-                cr_grupo=str(pick(r, ["cr grupo"]) or ""), conta_cod=int(conta),
+                ano=to_int(pick(r, ["ano"])) or int(ano), mes=to_int(pick(r, ["mes"])) or 1,
+                uni_cod=uni_cod, unidade=str(pick(r, ["descricao unidade"]) or ""),
+                cr_cod=cr_cod, cr_nome=str(pick(r, ["descricao centro"]) or ""),
+                cr_grupo=str(pick(r, ["cr grupo"]) or ""), conta_cod=conta_cod,
                 conta_desc=str(pick(r, ["descricao conta"]) or ""),
                 valor_planejado=num(pick(r, ["valor planejado"])), valor_realizado=num(pick(r, ["valor realizado"])),
                 tipo_conta=str(pick(r, ["tipo conta"]) or ""), classificacao=str(pick(r, ["classificacao"]) or "")))
@@ -253,12 +270,15 @@ def tela_importar(c):
         recs = []
         for _, r in df.iterrows():
             conta = pick(r, ["codctactb", "codigo conta"])
-            if pd.isna(conta) or str(conta).strip() == "":
+            uni_cod = to_int(pick(r, ["codigo unidade", "codigo_unidade"]))
+            cr_cod = to_int(pick(r, ["codcencus", "codigo centro"]))
+            conta_cod = to_int(conta)
+            if None in (uni_cod, cr_cod, conta_cod):
                 continue
             nf, hist = extrai_hist(pick(r, ["complhist"]))
-            recs.append(dict(ano=int(pick(r, ["ano"]) or ano), mes=int(pick(r, ["mes"]) or mes_op),
-                             uni_cod=int(pick(r, ["codigo unidade", "codigo_unidade"])),
-                             cr_cod=int(pick(r, ["codcencus", "codigo centro"])), conta_cod=int(conta),
+            recs.append(dict(ano=to_int(pick(r, ["ano"])) or int(ano),
+                             mes=to_int(pick(r, ["mes"])) or int(mes_op),
+                             uni_cod=uni_cod, cr_cod=cr_cod, conta_cod=conta_cod,
                              num_doc=nf, valor=num(pick(r, ["valor"])), historico=hist))
         c.table("operacional_detalhe").delete().eq("ano", int(ano)).eq("mes", int(mes_op)).execute()
         for ch in chunks(recs):
