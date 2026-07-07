@@ -464,6 +464,74 @@ def tela_painel(c, prof):
                 st.markdown(f"""<table class="lle"><tr><th>Conta</th><th>Situação</th>
                     <th style='text-align:left'>Justificativa</th></tr>{linhas2}</table>""", unsafe_allow_html=True)
 
+def tela_admin(c, prof):
+    header(prof)
+    st.subheader("Administração de acessos")
+    st.caption("Substitua o e-mail de um gestor desligado, ative/desative acessos e transfira centros de resultado. "
+               "O histórico de justificativas é sempre preservado.")
+
+    gestores = c.table("gestor").select("codigo, nome, papel").order("nome").execute().data or []
+    usuarios = c.table("gestor_usuario").select("email, gestor_codigo, papel_acesso, ativo").execute().data or []
+    nome_por_cod = {g["codigo"]: g["nome"] for g in gestores}
+    op_gestor = {f"{g['nome']} ({g['codigo']})": g["codigo"] for g in gestores}
+
+    aba = st.radio("Ação", ["Substituir e-mail (desligamento)", "Ativar / desativar acesso", "Transferir centro de resultado"], horizontal=False)
+
+    # 1) SUBSTITUIR E-MAIL --------------------------------------------------
+    if aba.startswith("Substituir"):
+        st.markdown("###### Substituir o e-mail de um gestor")
+        st.caption("O e-mail antigo é desativado (mantém o histórico) e o novo passa a acessar os mesmos centros de resultado.")
+        g_sel = st.selectbox("Gestor (função)", list(op_gestor.keys()))
+        cod = op_gestor[g_sel]
+        atuais = [u for u in usuarios if u["gestor_codigo"] == cod]
+        if atuais:
+            st.write("Acessos atuais desta função:")
+            st.markdown("<table class='lle'><tr><th>E-mail</th><th>Tipo</th><th>Situação</th></tr>" +
+                "".join(f"<tr><td>{u['email']}</td><td>{u['papel_acesso']}</td><td>{'Ativo' if u['ativo'] else 'Inativo'}</td></tr>" for u in atuais) +
+                "</table>", unsafe_allow_html=True)
+        email_antigo = st.selectbox("E-mail a desativar (do desligado)", ["(nenhum)"] + [u["email"] for u in atuais if u["ativo"]])
+        email_novo = st.text_input("Novo e-mail (do substituto)", placeholder="novo.gestor@grupolle.com.br").strip().lower()
+        st.info("Depois de salvar aqui, crie o login do novo e-mail no Supabase (Authentication → Users) com uma senha provisória.")
+        if st.button("Aplicar substituição", type="primary"):
+            if not email_novo or "@" not in email_novo:
+                st.error("Informe um e-mail novo válido.")
+            else:
+                if email_antigo != "(nenhum)":
+                    c.table("gestor_usuario").update({"ativo": False}).eq("email", email_antigo).execute()
+                c.table("gestor_usuario").upsert({"email": email_novo, "gestor_codigo": cod, "papel_acesso": "titular", "ativo": True, "senha_provisoria": True}, on_conflict="email").execute()
+                st.success(f"Feito: {email_novo} agora responde por {nome_por_cod.get(cod, cod)}." + (f" {email_antigo} foi desativado." if email_antigo != '(nenhum)' else ""))
+                st.rerun()
+
+    # 2) ATIVAR / DESATIVAR -------------------------------------------------
+    elif aba.startswith("Ativar"):
+        st.markdown("###### Ativar ou desativar um acesso")
+        if not usuarios:
+            st.info("Nenhum usuário cadastrado.")
+        else:
+            for u in sorted(usuarios, key=lambda x: (nome_por_cod.get(x["gestor_codigo"], ""), x["email"])):
+                col1, col2, col3 = st.columns([3, 2, 1.2])
+                col1.write(f"**{u['email']}**")
+                col2.write(f"{nome_por_cod.get(u['gestor_codigo'], u['gestor_codigo'])} · {'Ativo' if u['ativo'] else 'Inativo'}")
+                novo_estado = not u["ativo"]
+                rot = "Reativar" if not u["ativo"] else "Desativar"
+                if col3.button(rot, key=f"tog_{u['email']}"):
+                    c.table("gestor_usuario").update({"ativo": novo_estado}).eq("email", u["email"]).execute()
+                    st.rerun()
+
+    # 3) TRANSFERIR CR ------------------------------------------------------
+    else:
+        st.markdown("###### Transferir um centro de resultado para outro gestor")
+        st.caption("Muda o dono do CR. As justificativas já feitas continuam registradas na conta/CR, sem alteração.")
+        crs = c.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor_codigo").order("cr_nome").execute().data or []
+        op_cr = {f"{r['cr_nome']} (uni {r['uni_cod']} · CR {r['cr_cod']}) — hoje: {nome_por_cod.get(r['gestor_codigo'], r['gestor_codigo'])}": (r["uni_cod"], r["cr_cod"]) for r in crs}
+        cr_sel = st.selectbox("Centro de resultado", list(op_cr.keys()))
+        destino = st.selectbox("Novo gestor responsável", list(op_gestor.keys()))
+        if st.button("Transferir CR", type="primary"):
+            uni, crc = op_cr[cr_sel]
+            c.table("cr_gestor").update({"gestor_codigo": op_gestor[destino]}).eq("uni_cod", uni).eq("cr_cod", crc).execute()
+            st.success(f"CR transferido para {destino.split(' (')[0]}.")
+            st.rerun()
+
 # ---------------------------------------------------------------- acompanhamento
 def tela_acompanhamento(c, prof):
     is_ctrl = prof["papel"] == "controladoria"
@@ -557,9 +625,10 @@ def main():
     if prof.get("senha_provisoria"):
         tela_trocar_senha(c, st.session_state.get("email", "")); return
     if prof["papel"] == "controladoria":
-        aba = st.sidebar.radio("Menu", ["Acompanhamento", "Justificativas recebidas", "Importar dados"])
+        aba = st.sidebar.radio("Menu", ["Acompanhamento", "Justificativas recebidas", "Administração de acessos", "Importar dados"])
         if aba == "Importar dados": header(prof); tela_importar(c); return
         if aba == "Justificativas recebidas": tela_painel(c, prof); return
+        if aba == "Administração de acessos": tela_admin(c, prof); return
     tela_acompanhamento(c, prof)
 
 main()
