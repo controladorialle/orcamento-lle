@@ -21,6 +21,24 @@ URL = st.secrets.get("SUPABASE_URL", ""); ANON = st.secrets.get("SUPABASE_ANON_K
 MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 MABREV = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 STATUS_LABEL = {"PENDENTE": "Pendente", "JUSTIFICADO": "Justificado", "EM_REVISAO": "Em revisão", "DEVOLVIDO": "Devolvido", "APROVADO": "Aprovado"}
+CATEGORIAS = [("SALARIOS", "Salários e ordenados"), ("ENCARGOS", "Encargos"), ("BENEFICIOS", "Benefícios"), ("OUTROS", "Outros de pessoal")]
+CAT_LABEL = dict(CATEGORIAS)
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# Mapeamento das rubricas do template Treasy nas 4 categorias
+HC_MAP = {
+    "SALARIOS": ["SALARIO_TOTAL", "PRO_LABORE", "HE", "ADICIONAIS", "BONIFICACOES_GRATIFICACOES",
+                 "BOLSA_ESTAGIO", "JOVEM_APRENDIZ", "QUEBRA_DE_CAIXA", "PROVISAO_FERIAS",
+                 "PROVISAO_13_SALARIO", "AJUDA_DE_CUSTO", "AUXILIO_EDUCACAO", "COMISSAO"],
+    "ENCARGOS": ["INSS_SALARIOS", "FGTS_SALARIOS", "FGTS_RESCISORIO", "INSS_SOBRE_PROVISAO_FERIAS",
+                 "FGTS_SOBRE_PROVISAO_FERIAS", "INSS_SOBRE_PROVISAO_13_SALARIO", "FGTS_SOBRE_PROVISAO_13_SALARIO"],
+    "BENEFICIOS": ["PROGRAMA_ALIMENTACAO", "ASSISTENCIA_MEDICA_ODONTO", "VALE_TRANSPORTE",
+                   "VALE_COMBUSTIVEL", "QUALIDADE_DE_VIDA", "CESTA_BASICA"],
+    "OUTROS": ["INDENIZACOES_AVISO", "TREINAMENTO", "UNIFORME_EPI", "EXAMES_MEDICOS", "CONTRIBUICAO_SINDICAL",
+               "ABONO_PECUNIARIO_SINDICATO", "PLR", "EVENTOS_INTERNOS", "CONDUCOES_TRANSPORTES",
+               "SEGURO_DE_VIDA", "DESPESAS_ENDOMARKETING"],
+}
+HC_COLS_DIM = ["ANO", "MES", "CODIGO_UNIDADE_NEGOCIO", "DESCRICAO_UNIDADE_NEGOCIO", "CODIGO_CENTRO_RESULTADO",
+               "DESCRICAO_CENTRO_RESULTADO", "CODIGO_CARGO_FUNCIONARIO", "DESCRICAO_CARGO_FUNCIONARIO", "QUANTIDADE_FUNCIONARIOS"]
 
 LOGO = f"""<svg width="42" height="54" viewBox="0 0 32 44" xmlns="http://www.w3.org/2000/svg">
 <polygon points="16,2 23,9 16,16 9,9" fill="{AMARELO}"/><polygon points="16,10 23,17 16,24 9,17" fill="{AMARELO}"/>
@@ -239,6 +257,25 @@ def _q_justif_ano(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
     return cc.table("justificativa").select("*").eq("ano", ano).execute().data or []
 def carregar_justificativas_ano(ano): return _q_justif_ano(*_tok(), ano)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _q_hc_quadro(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    return cc.table("hc_quadro").select("*").eq("ano", ano).execute().data or []
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _q_hc_custo(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    return cc.table("hc_custo").select("*").eq("ano", ano).execute().data or []
+
+def carregar_hc_quadro(ano): return _q_hc_quadro(*_tok(), ano)
+def carregar_hc_custo(ano): return _q_hc_custo(*_tok(), ano)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_orc_log(tok, rtok, limite):
+    cc = _cli_tok(tok, rtok)
+    return cc.table("orc_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+def carregar_orc_log(limite=200): return _q_orc_log(*_tok(), limite)
 
 def limpar_cache():
     """Limpeza total — usar em importações (mudam orçado e operacional)."""
@@ -541,6 +578,141 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                         c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); limpar_cache_justif(); st.rerun()
 
 # ---------------------------------------------------------------- importar / config
+def modelo_hc_treasy_xlsx():
+    import io
+    cols = HC_COLS_DIM + [col for cat in ("SALARIOS", "ENCARGOS", "BENEFICIOS", "OUTROS") for col in HC_MAP[cat]]
+    ex1 = {c: 0 for c in cols}
+    ex1.update({"ANO": 2026, "MES": 6, "CODIGO_UNIDADE_NEGOCIO": 1, "DESCRICAO_UNIDADE_NEGOCIO": "PISA",
+                "CODIGO_CENTRO_RESULTADO": 102001, "DESCRICAO_CENTRO_RESULTADO": "CONTROLADORIA E AUDITORIA",
+                "CODIGO_CARGO_FUNCIONARIO": 427, "DESCRICAO_CARGO_FUNCIONARIO": "ANALISTA DE CONTROLADORIA",
+                "QUANTIDADE_FUNCIONARIOS": 1, "SALARIO_TOTAL": 5803, "INSS_SALARIOS": 1584.22, "FGTS_SALARIOS": 464.24})
+    df = pd.DataFrame([ex1], columns=cols)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as x:
+        df.to_excel(x, index=False, sheet_name="Planilha2")
+    return buf.getvalue()
+
+def tela_headcount(c, prof):
+    st.markdown("<div class='modtag'>Controle de Headcount</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Quadro de pessoal e gastos com pessoal — orçado x realizado (Unidade × CR × Cargo)</div>", unsafe_allow_html=True)
+
+    q = pd.DataFrame(carregar_hc_quadro(2026))
+    k = pd.DataFrame(carregar_hc_custo(2026))
+    if q.empty and k.empty:
+        st.info("Nenhum dado de headcount ainda. Vá à aba **Importar dados**, seção *Headcount*, baixe o modelo e importe a planilha (padrão Treasy).")
+        return
+    for col in ("qtd_orcada", "qtd_realizada"):
+        if not q.empty and col not in q.columns: q[col] = 0
+    for col in ("valor_orcado", "valor_realizado"):
+        if not k.empty and col not in k.columns: k[col] = 0
+
+    base = pd.concat([q, k], ignore_index=True)
+    def _opts_int(cod, nome):
+        d = {}
+        for _, r in base.iterrows():
+            try: d[int(r[cod])] = str(r.get(nome, "") or int(r[cod]))
+            except Exception: pass
+        return d
+    uni_map, cr_map = _opts_int("uni_cod", "unidade"), _opts_int("cr_cod", "cr_nome")
+    cargo_map = {}
+    for _, r in base.iterrows():
+        cc = str(r.get("cargo_cod", "") or "")
+        if cc: cargo_map[cc] = str(r.get("cargo_nome", "") or cc)
+
+    fc = st.columns([1.1, 1.1, 1.6, 1.6])
+    mes = fc[0].selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="hc_mes")
+    uni_sel = fc[1].selectbox("Unidade", [0] + sorted(uni_map), format_func=lambda x: "Todas" if x == 0 else uni_map[x], key="hc_uni")
+    cr_sel = fc[2].selectbox("Centro de resultado", [0] + sorted(cr_map), format_func=lambda x: "Todos" if x == 0 else f"{x} · {cr_map[x]}", key="hc_cr")
+    cargo_sel = fc[3].selectbox("Cargo", [""] + sorted(cargo_map), format_func=lambda x: "Todos" if x == "" else f"{x} · {cargo_map[x]}", key="hc_cargo")
+
+    def filtra(df, com_mes=True):
+        if df.empty: return df
+        d = df[df["mes"] == mes] if com_mes else df
+        if uni_sel: d = d[d["uni_cod"] == uni_sel]
+        if cr_sel: d = d[d["cr_cod"] == cr_sel]
+        if cargo_sel: d = d[d["cargo_cod"].astype(str) == cargo_sel]
+        return d
+    qf, kf = filtra(q), filtra(k)
+
+    hc_o = int(qf["qtd_orcada"].sum()) if not qf.empty else 0
+    hc_r = int(qf["qtd_realizada"].sum()) if not qf.empty else 0
+    custo_o = float(kf["valor_orcado"].sum()) if not kf.empty else 0.0
+    custo_r = float(kf["valor_realizado"].sum()) if not kf.empty else 0.0
+    d_hc = hc_r - hc_o
+    d_custo_pct = (custo_r - custo_o) / custo_o * 100 if custo_o else 0.0
+    medio = custo_r / hc_r if hc_r else 0.0
+    cor_hc = CINZA_TXT if d_hc == 0 else (VERMELHO if d_hc > 0 else VERDE)
+    cor_ct = CINZA_TXT if abs(d_custo_pct) < 0.05 else (VERMELHO if d_custo_pct > 0 else VERDE)
+
+    cards = [("HC orçado", str(hc_o), AZUL_PROFUNDO), ("HC realizado", str(hc_r), AZUL_PROFUNDO),
+             ("Δ headcount", f"{d_hc:+d}", cor_hc), ("Custo realizado", brl(custo_r), AZUL_PROFUNDO),
+             ("Δ custo", pct_txt(d_custo_pct), cor_ct), ("Custo médio/func.", brl(medio), AZUL_PROFUNDO)]
+    html = "<div class='cards'>"
+    for lab, val, cor in cards:
+        html += f"<div class='card'><div class='lab'>{lab}</div><div class='val' style='color:{cor}'>{val}</div></div>"
+    st.markdown(html + "</div>", unsafe_allow_html=True)
+
+    # quadro por cargo
+    st.markdown("#### Quadro por cargo — orçado x realizado")
+    hcg = (qf.groupby(["cargo_cod", "cargo_nome"], as_index=False).agg(o=("qtd_orcada", "sum"), r=("qtd_realizada", "sum"))
+           if not qf.empty else pd.DataFrame(columns=["cargo_cod", "cargo_nome", "o", "r"]))
+    custg = (kf.groupby("cargo_cod", as_index=False).agg(co=("valor_orcado", "sum"), cr=("valor_realizado", "sum"))
+             if not kf.empty else pd.DataFrame(columns=["cargo_cod", "co", "cr"]))
+    m = hcg.merge(custg, on="cargo_cod", how="outer") if not (hcg.empty and custg.empty) else pd.DataFrame()
+    if not m.empty:
+        m = m.fillna(0)
+        m["cargo_nome"] = m["cargo_nome"].replace(0, "").astype(str)
+        m = m.sort_values("cr", ascending=False)
+        linhas = ""
+        for _, r in m.iterrows():
+            dhc = int(r["r"]) - int(r["o"])
+            ch = CINZA_TXT if dhc == 0 else (VERMELHO if dhc > 0 else VERDE)
+            dcp = (r["cr"] - r["co"]) / r["co"] * 100 if r["co"] else 0.0
+            cc2 = CINZA_TXT if abs(dcp) < 0.05 else (VERMELHO if dcp > 0 else VERDE)
+            nome = r["cargo_nome"] or f"Cargo {r['cargo_cod']}"
+            linhas += (f"<tr><td style='text-align:left'>{r['cargo_cod']} · {nome}</td>"
+                       f"<td style='text-align:center'>{int(r['o'])}</td><td style='text-align:center'>{int(r['r'])}</td>"
+                       f"<td style='text-align:center; color:{ch}'>{dhc:+d}</td>"
+                       f"<td>{brl(r['cr'])}</td><td style='text-align:center; color:{cc2}'>{pct_txt(dcp)}</td></tr>")
+        st.markdown(f"""<table class="lle"><tr><th style='text-align:left'>Cargo</th>
+            <th style='text-align:center'>HC orç.</th><th style='text-align:center'>HC real.</th>
+            <th style='text-align:center'>Δ HC</th><th>Custo real.</th><th style='text-align:center'>Δ %</th></tr>{linhas}</table>""", unsafe_allow_html=True)
+    else:
+        st.caption("Sem lançamentos para os filtros selecionados.")
+
+    # composição por categoria
+    st.markdown("#### Composição do custo de pessoal por categoria")
+    if not kf.empty:
+        catg = kf.groupby("categoria", as_index=False).agg(o=("valor_orcado", "sum"), r=("valor_realizado", "sum"))
+        cmap = {row["categoria"]: (row["o"], row["r"]) for _, row in catg.iterrows()}
+        cols = st.columns(len(CATEGORIAS))
+        for i, (cod, lab) in enumerate(CATEGORIAS):
+            o, rr = cmap.get(cod, (0.0, 0.0))
+            dcp = (rr - o) / o * 100 if o else 0.0
+            cor = CINZA_TXT if abs(dcp) < 0.05 else (VERMELHO if dcp > 0 else VERDE)
+            cols[i].markdown(
+                f"<div style='border:1px solid {LINHA}; border-radius:12px; padding:12px'>"
+                f"<div style='font-size:12px; color:{CINZA_TXT}'>{lab}</div>"
+                f"<div style='font-size:16px; font-weight:700; color:{AZUL_PROFUNDO}'>{brl(rr)}</div>"
+                f"<div style='font-size:11px; color:{cor}'>{pct_txt(dcp)} vs orçado</div></div>", unsafe_allow_html=True)
+    else:
+        st.caption("Sem custo de pessoal para os filtros selecionados.")
+
+    # evolução mensal do headcount
+    st.markdown("#### Evolução mensal do headcount")
+    qy = filtra(q, com_mes=False)
+    if not qy.empty:
+        ev = qy.groupby("mes", as_index=False).agg(o=("qtd_orcada", "sum"), r=("qtd_realizada", "sum"))
+        emap = {int(row["mes"]): (int(row["o"]), int(row["r"])) for _, row in ev.iterrows()}
+        cab = "".join(f"<th style='text-align:center'>{MESES[mm][:3]}</th>" for mm in range(1, 13))
+        lo = "".join(f"<td style='text-align:center'>{emap.get(mm,(0,0))[0]}</td>" for mm in range(1, 13))
+        lr = "".join(f"<td style='text-align:center'>{emap.get(mm,(0,0))[1]}</td>" for mm in range(1, 13))
+        st.markdown(f"""<table class="lle"><tr><th style='text-align:left'>&nbsp;</th>{cab}</tr>
+            <tr><td style='text-align:left'>Orçado</td>{lo}</tr>
+            <tr><td style='text-align:left'>Realizado</td>{lr}</tr></table>""", unsafe_allow_html=True)
+    else:
+        st.caption("Sem dados de quadro para os filtros selecionados.")
+
 def tela_importar(c):
     st.markdown("<div class='modtag'>Configuração e importação de dados</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Regras de classificação, cobrança e carga das bases mensais</div>", unsafe_allow_html=True)
@@ -614,6 +786,62 @@ def tela_importar(c):
         st.success(f"{len(recs)} lançamentos com histórico importados.")
         limpar_cache()
 
+    st.divider()
+    st.subheader("Headcount — planilha de pessoal (padrão Treasy)")
+    st.caption("Arquivo único no layout Treasy: uma linha por unidade × CR × cargo, com QUANTIDADE_FUNCIONARIOS e as "
+               "rubricas de custo. O sistema soma as rubricas nas 4 categorias automaticamente. Importe o arquivo de "
+               "Realizado e, se tiver, o de Orçado — cada tipo preenche a sua coluna, sem apagar o outro.")
+    st.download_button("⬇️ Modelo — layout Treasy", data=modelo_hc_treasy_xlsx(),
+                       file_name="modelo_headcount_treasy.xlsx", mime=XLSX_MIME, key="mdl_hc")
+
+    def salvar_cargos(cargos):
+        recs = [dict(cargo_cod=k, cargo_nome=v, ativo=True) for k, v in cargos.items() if k]
+        for ch in chunks(recs):
+            try: c.table("hc_cargo").upsert(ch, on_conflict="cargo_cod").execute()
+            except Exception: pass
+
+    def cod_cargo(x):
+        if x is None or pd.isna(x): return None
+        if isinstance(x, (int, float)):
+            return str(int(x)) if float(x).is_integer() else str(x)
+        return str(x).strip()
+
+    tipo = st.radio("Este arquivo é", ["Realizado", "Orçado"], horizontal=True, key="hc_tipo")
+    fh = st.file_uploader("Planilha de pessoal (layout Treasy)", type=["xlsx"], key="fh")
+    if fh and st.button("Importar planilha de pessoal", key="imp_hc"):
+        df = pd.read_excel(fh).dropna(how="all")
+        cmap = {norm(col): col for col in df.columns}
+        def cv(row, name):
+            col = cmap.get(norm(name))
+            return row[col] if col is not None else None
+        realizado = tipo == "Realizado"
+        qcol = "qtd_realizada" if realizado else "qtd_orcada"
+        vcol = "valor_realizado" if realizado else "valor_orcado"
+        quadro, custo, cargos = [], [], {}
+        for _, r in df.iterrows():
+            uni = toint(cv(r, "CODIGO_UNIDADE_NEGOCIO")); cr = toint(cv(r, "CODIGO_CENTRO_RESULTADO"))
+            cgo = cod_cargo(cv(r, "CODIGO_CARGO_FUNCIONARIO"))
+            if uni is None or cr is None or not cgo: continue
+            an = toint(cv(r, "ANO")) or int(ano); me = toint(cv(r, "MES")) or 1
+            cargo_nome = str(cv(r, "DESCRICAO_CARGO_FUNCIONARIO") or "")
+            cargos[cgo] = cargo_nome
+            dim = dict(ano=an, mes=me, uni_cod=uni, unidade=str(cv(r, "DESCRICAO_UNIDADE_NEGOCIO") or ""),
+                       cr_cod=cr, cr_nome=str(cv(r, "DESCRICAO_CENTRO_RESULTADO") or ""),
+                       cargo_cod=cgo, cargo_nome=cargo_nome)
+            quadro.append({**dim, qcol: num(cv(r, "QUANTIDADE_FUNCIONARIOS"))})
+            for cat, rubricas in HC_MAP.items():
+                total = sum(num(cv(r, rub)) for rub in rubricas)
+                custo.append({**dim, "categoria": cat, vcol: total})
+        salvar_cargos(cargos)
+        for ch in chunks(quadro):
+            c.table("hc_quadro").upsert(ch, on_conflict="ano,mes,uni_cod,cr_cod,cargo_cod").execute()
+        for ch in chunks(custo):
+            c.table("hc_custo").upsert(ch, on_conflict="ano,mes,uni_cod,cr_cod,cargo_cod,categoria").execute()
+        periodos = sorted({(x["ano"], x["mes"]) for x in quadro})
+        per = ", ".join(f"{m:02d}/{a}" for a, m in periodos)
+        st.success(f"{len(quadro)} cargo(s) importado(s) como {tipo}" + (f" — período(s): {per}." if per else "."))
+        limpar_cache()
+
 # ---------------------------------------------------------------- painel de recebidas
 def relatorio_justificativas_xlsx(js_rows, df_orc, cg):
     """Monta um .xlsx das justificativas inseridas, enriquecido com orçado/realizado/variação."""
@@ -635,7 +863,7 @@ def relatorio_justificativas_xlsx(js_rows, df_orc, cg):
         if not unidade:
             unidade = "PISA" if uni == 1 else "KING" if uni == 2 else f"Emp {uni}"
         linhas.append({
-            "Ano": int(j.get("ano", 2026)), "Mês": MESES.get(mes, mes), "Nº Mês": mes,
+            "Ano": int(j.get("ano", 2026)), "Mês": MESES[mes], "Nº Mês": mes,
             "Gestor": gestor, "Cód. Unidade": uni, "Unidade": unidade,
             "Cód. CR": cr, "Centro de Resultado": cr_nome,
             "Cód. Conta": ct, "Descrição da Conta": conta_desc,
@@ -774,6 +1002,96 @@ def tela_painel(c, prof, banda, df_orc, cg):
                 st.markdown(f"""<table class="lle"><tr><th style='text-align:center'>Conta</th>
                     <th style='text-align:center'>Situação</th>
                     <th style='text-align:left'>Justificativa</th></tr>{linhas2}</table>""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------- edição manual do orçado
+def tela_editar_orcado(c, prof, df_orc):
+    st.markdown("<div class='modtag'>Ajuste manual de orçado e realizado</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Edite orçado e/ou realizado linha a linha — ideal para reclassificações no período, sem reimportar o arquivo. Toda alteração fica registrada no log.</div>", unsafe_allow_html=True)
+    if df_orc is None or df_orc.empty:
+        st.info("Base de orçado ainda não carregada. Importe na aba **Importar dados**.")
+        return
+
+    fc = st.columns([1.1, 1.3, 1.9])
+    mes = fc[0].selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="edo_mes")
+    unis = sorted({(int(r["uni_cod"]), r.get("unidade", "")) for _, r in df_orc.iterrows()})
+    uni_sel = fc[1].selectbox("Unidade", [0] + [u[0] for u in unis],
+                              format_func=lambda x: "Todas" if x == 0 else next((n for u, n in unis if u == x), str(x)), key="edo_uni")
+    dcr = df_orc if not uni_sel else df_orc[df_orc["uni_cod"] == uni_sel]
+    crs = sorted({(int(r["cr_cod"]), r.get("cr_nome", "")) for _, r in dcr.iterrows()})
+    cr_sel = fc[2].selectbox("Centro de resultado", [0] + [x[0] for x in crs],
+                             format_func=lambda x: "Todos" if x == 0 else f"{x} · {next((n for cc, n in crs if cc == x), '')}", key="edo_cr")
+
+    view = df_orc[df_orc["mes"] == mes]
+    if uni_sel: view = view[view["uni_cod"] == uni_sel]
+    if cr_sel: view = view[view["cr_cod"] == cr_sel]
+    if view.empty:
+        st.info("Nenhuma conta para os filtros selecionados.")
+    else:
+        view = view.sort_values(["uni_cod", "cr_cod", "conta_cod"]).reset_index(drop=True)
+        keys = [(int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), int(r.conta_cod)) for r in view.itertuples()]
+        orig_o = [round(float(r.valor_planejado or 0), 2) for r in view.itertuples()]
+        orig_r = [round(float(r.valor_realizado or 0), 2) for r in view.itertuples()]
+        disp = pd.DataFrame({
+            "Unidade": [r.unidade for r in view.itertuples()],
+            "Centro de resultado": [r.cr_nome for r in view.itertuples()],
+            "Conta": [f"{int(r.conta_cod)} · {r.conta_desc}" for r in view.itertuples()],
+            "Orçado": orig_o,
+            "Realizado": orig_r,
+        })
+        st.caption(f"{len(disp)} conta(s) em {MESES[mes]}/2026. Edite **Orçado** e/ou **Realizado** e clique em salvar.")
+        edited = st.data_editor(
+            disp, key=f"edo_grid_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
+            num_rows="fixed", disabled=["Unidade", "Centro de resultado", "Conta"],
+            column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                           "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+        if st.button("Salvar alterações", key="edo_save", type="primary"):
+            novos_o = list(edited["Orçado"]); novos_r = list(edited["Realizado"])
+            mudou = 0
+            for i, kkey in enumerate(keys):
+                an, me, uni, cr, ct = kkey
+                match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, conta_cod=ct)
+                for coluna, novos, orig in (("valor_planejado", novos_o, orig_o),
+                                            ("valor_realizado", novos_r, orig_r)):
+                    try: nv = round(float(novos[i]), 2)
+                    except (TypeError, ValueError): continue
+                    if abs(nv - orig[i]) > 0.005:
+                        c.table("orc_realizado").update({coluna: nv}).match(match).execute()
+                        c.table("orc_log").insert(dict(**match, campo=coluna, valor_antigo=orig[i],
+                            valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
+                        mudou += 1
+            if mudou:
+                limpar_cache()
+                st.success(f"{mudou} alteração(ões) salva(s) e registrada(s) no log.")
+                st.rerun()
+            else:
+                st.info("Nenhuma alteração detectada.")
+
+    # ---------- histórico de alterações ----------
+    st.divider()
+    st.markdown("#### Histórico de alterações")
+    log = carregar_orc_log(300)
+    if not log:
+        st.caption("Nenhuma alteração registrada ainda.")
+        return
+    nome = {}
+    for _, r in df_orc.iterrows():
+        nome[(int(r["uni_cod"]), int(r["cr_cod"]), int(r["conta_cod"]))] = (r.get("unidade", ""), r.get("cr_nome", ""), r.get("conta_desc", ""))
+    linhas = ""
+    for g in log[:300]:
+        uni = int(g.get("uni_cod") or 0); cr = int(g.get("cr_cod") or 0); ct = int(g.get("conta_cod") or 0)
+        un, crn, cd = nome.get((uni, cr, ct), ("", "", ""))
+        quando = str(g.get("alterado_em", "") or "")[:16].replace("T", " ")
+        va = float(g.get("valor_antigo") or 0); vn = float(g.get("valor_novo") or 0)
+        seta = VERMELHO if vn > va else VERDE
+        campo_lab = "Orçado" if g.get("campo") == "valor_planejado" else "Realizado"
+        linhas += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{g.get('alterado_por','') or '—'}</td>"
+                   f"<td style='text-align:left'>{MESES[int(g.get('mes') or 1)]}</td><td style='text-align:left'>{un or uni}</td>"
+                   f"<td style='text-align:left'>{cr} · {crn}</td><td style='text-align:left'>{ct} · {cd}</td>"
+                   f"<td style='text-align:center'>{campo_lab}</td><td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
+    st.markdown(f"""<table class="lle"><tr>
+        <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+        <th style='text-align:left'>Unidade</th><th style='text-align:left'>Centro de resultado</th>
+        <th style='text-align:left'>Conta</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{linhas}</table>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- administração
 def tela_admin(c, prof):
@@ -943,12 +1261,14 @@ def render_app(c, prof):
         cg = {}
 
     if is_ctrl:
-        t1, t2, t3, t4 = st.tabs(["📊 Acompanhamento", "📥 Justificativas recebidas",
-                                  "🔑 Administração de acessos", "⬆️ Importar dados"])
+        t1, t2, t3, t4, t5, t6 = st.tabs(["📊 Acompanhamento", "📥 Justificativas recebidas",
+                                          "👥 Headcount", "✏️ Editar orçado", "🔑 Administração de acessos", "⬆️ Importar dados"])
         with t1: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
         with t2: tela_painel(c, prof, banda, df_orc, cg)
-        with t3: tela_admin(c, prof)
-        with t4: tela_importar(c)
+        with t3: tela_headcount(c, prof)
+        with t4: tela_editar_orcado(c, prof, df_orc)
+        with t5: tela_admin(c, prof)
+        with t6: tela_importar(c)
     else:
         tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
 
