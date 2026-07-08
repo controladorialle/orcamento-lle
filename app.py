@@ -422,6 +422,39 @@ def tabela_evolucao(df, banda, mes_sel):
         <th>Mês</th><th>Orçado</th><th>Realizado</th><th>Var. (R$)</th><th>Var. (%)</th><th>Status</th>
         <th>Realizado YTD</th><th>Var. YTD (R$)</th><th>Var. YTD (%)</th></tr>{linhas}</table></div>""", unsafe_allow_html=True)
 
+    # ---------- drill do mês: orçado por conta e empresa ----------
+    st.markdown("###### Detalhe do mês — orçado por conta e empresa")
+    md = st.selectbox("Mês para detalhar", list(range(1, 13)),
+                      index=(mes_sel - 1 if 1 <= mes_sel <= 12 else 0),
+                      format_func=lambda m: f"{MESES[m]}/2026", key="evo_drill_mes")
+    det = df[df["mes"] == md].copy()
+    if det.empty:
+        st.caption(f"Nenhum lançamento em {MESES[md]}/2026 para os filtros selecionados.")
+        return
+    det = det.sort_values(["cr_nome", "conta_cod", "uni_cod"])
+    to = float(det["valor_planejado"].sum()); tr = float(det["valor_realizado"].sum())
+    tv = tr - to
+    linhas2 = ""
+    for r in det.itertuples():
+        vp = float(r.valor_planejado or 0); vr = float(r.valor_realizado or 0)
+        raw = vr - vp
+        cor = CINZA_TXT if vr == 0 else (VERMELHO if raw > 0 else VERDE)
+        vr_txt = brl(vr) if vr else "—"
+        var_txt = ("—" if vr == 0 else brl(raw))
+        linhas2 += (f"<tr><td style='text-align:left'>{int(r.cr_cod)} · {r.cr_nome}</td>"
+                    f"<td style='text-align:left'>{int(r.conta_cod)} · {r.conta_desc}</td>"
+                    f"<td style='text-align:center'>{r.unidade}</td>"
+                    f"<td>{brl(vp)}</td><td>{vr_txt}</td><td style='color:{cor}'>{var_txt}</td></tr>")
+    tvcor = CINZA_TXT if tr == 0 else (VERMELHO if tv > 0 else VERDE)
+    total = (f"<tr class='mark'><td style='text-align:left' colspan='3'><b>Total ({len(det)} linha(s))</b></td>"
+             f"<td><b>{brl(to)}</b></td><td><b>{brl(tr) if tr else '—'}</b></td>"
+             f"<td style='color:{tvcor}'><b>{brl(tv) if tr else '—'}</b></td></tr>")
+    st.caption(f"{MESES[md]}/2026 · {len(det)} conta(s)/empresa(s) — respeita os filtros de unidade, CR e conta acima.")
+    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
+        <th style='text-align:left'>Centro de resultado</th><th style='text-align:left'>Conta</th>
+        <th style='text-align:center'>Empresa</th><th>Orçado</th><th>Realizado</th><th>Var. (R$)</th></tr>
+        {linhas2}{total}</table></div>""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------------- DRILL-DOWN por CR -> conta
 def drill_desvios(d_mes, banda, mes):
     if d_mes.empty:
