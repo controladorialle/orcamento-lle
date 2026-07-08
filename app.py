@@ -81,7 +81,7 @@ def inject_css():
       /* cards contadores */
       .cards {{ display:flex; gap:12px; flex-wrap:wrap; margin:6px 0 4px; }}
       .card {{ flex:1; min-width:150px; background:#fff; border:1px solid {LINHA}; border-radius:12px;
-        padding:13px 16px; box-shadow:0 2px 8px rgba(7,22,57,.05); }}
+        padding:13px 16px; box-shadow:0 2px 8px rgba(7,22,57,.05); text-align:center; }}
       .card .lab {{ font-size:11px; color:{CINZA_TXT}; text-transform:uppercase; letter-spacing:.04em; }}
       .card .val {{ font-size:21px; color:{AZUL_PROFUNDO}; font-weight:700; margin-top:3px; }}
 
@@ -637,20 +637,23 @@ def tela_painel(c, prof, banda, df_orc, cg):
                 linhas = ""
                 for it in sorted(d["itens"], key=lambda x: -x["raw"]):
                     tag = " (devolvida)" if it["dev"] else ""
-                    linhas += (f"<tr><td>{it['cr']}</td><td>{it['conta']}{tag}</td>"
-                               f"<td style='color:{VERMELHO}'>{brl(it['raw'])}</td></tr>")
-                st.markdown(f"""<table class="lle"><tr><th>Centro de resultado</th><th>Conta</th>
-                    <th>Desvio (R$)</th></tr>{linhas}</table>""", unsafe_allow_html=True)
+                    linhas += (f"<tr><td>{it['cr']}</td><td style='text-align:center'>{it['conta']}{tag}</td>"
+                               f"<td style='text-align:center; color:{VERMELHO}'>{brl(it['raw'])}</td></tr>")
+                st.markdown(f"""<table class="lle"><tr><th style='text-align:left'>Centro de resultado</th>
+                    <th style='text-align:center'>Conta</th>
+                    <th style='text-align:center'>Desvio (R$)</th></tr>{linhas}</table>""", unsafe_allow_html=True)
     st.divider()
 
     if not js:
         st.info(f"Ainda não há justificativas enviadas em {MESES[mes]}/2026. As pendências acima mostram o que falta.")
         return
 
+    desc_map = dict(zip(df_orc["conta_cod"].astype(int), df_orc["conta_desc"])) if not df_orc.empty else {}
     linhas = []
     for j in js:
         gestor, cr_nome = cg.get((j["uni_cod"], j["cr_cod"]), ("—", str(j["cr_cod"])))
-        linhas.append({"gestor": gestor, "cr": cr_nome, "conta": j["conta_cod"],
+        linhas.append({"gestor": gestor, "cr": cr_nome, "cr_cod": int(j["cr_cod"]),
+                       "conta": j["conta_cod"], "conta_desc": desc_map.get(int(j["conta_cod"]), ""),
                        "status": j.get("status", "PENDENTE"), "texto": j.get("texto", "") or "",
                        "comentario": j.get("comentario_controladoria", "") or "",
                        "_k": (j["uni_cod"], j["cr_cod"], j["conta_cod"])})
@@ -661,12 +664,12 @@ def tela_painel(c, prof, banda, df_orc, cg):
     for gestor in sorted(df["gestor"].unique()):
         sub = df[df["gestor"] == gestor]
         cnt = {s: int((sub["status"] == s).sum()) for s in STATUS_LABEL}
-        resumo += (f"<tr><td>{gestor}</td><td>{len(sub)}</td>"
-                   f"<td style='color:{VERMELHO}'>{cnt['PENDENTE']+cnt['DEVOLVIDO']}</td>"
-                   f"<td style='color:{AZUL_CORP}'>{cnt['JUSTIFICADO']+cnt['EM_REVISAO']}</td>"
-                   f"<td style='color:{VERDE}'>{cnt['APROVADO']}</td></tr>")
-    st.markdown(f"""<table class="lle"><tr><th>Gestor</th><th>Total</th>
-        <th>A responder</th><th>Aguardando controladoria</th><th>Aprovadas</th></tr>{resumo}</table>""", unsafe_allow_html=True)
+        resumo += (f"<tr><td style='text-align:center'>{gestor}</td><td style='text-align:center'>{len(sub)}</td>"
+                   f"<td style='text-align:center; color:{VERMELHO}'>{cnt['PENDENTE']+cnt['DEVOLVIDO']}</td>"
+                   f"<td style='text-align:center; color:{AZUL_CORP}'>{cnt['JUSTIFICADO']+cnt['EM_REVISAO']}</td>"
+                   f"<td style='text-align:center; color:{VERDE}'>{cnt['APROVADO']}</td></tr>")
+    st.markdown(f"""<table class="lle"><tr><th style='text-align:center'>Gestor</th><th style='text-align:center'>Total</th>
+        <th style='text-align:center'>A responder</th><th style='text-align:center'>Aguardando controladoria</th><th style='text-align:center'>Aprovadas</th></tr>{resumo}</table>""", unsafe_allow_html=True)
 
     st.markdown("###### Detalhe por gestor e centro de resultado")
     st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP}
@@ -674,14 +677,20 @@ def tela_painel(c, prof, banda, df_orc, cg):
         sub = df[df["gestor"] == gestor]
         with st.expander(f"{gestor} — {len(sub)} justificativa(s)"):
             for cr in sorted(sub["cr"].unique()):
-                st.markdown(f"**{cr}**")
+                grp = sub[sub["cr"] == cr]
+                crc = int(grp["cr_cod"].iloc[0])
+                st.markdown(f"**{cr} · {crc}**")
                 linhas2 = ""
-                for _, r in sub[sub["cr"] == cr].iterrows():
+                for _, r in grp.iterrows():
                     st_lab = STATUS_LABEL.get(r["status"])
                     cor = st_cor.get(r["status"], AZUL_CORP)
                     txt = (r["texto"][:120] + "…") if len(r["texto"]) > 120 else (r["texto"] or "—")
-                    linhas2 += f"<tr><td>{r['conta']}</td><td>{chip(st_lab, cor)}</td><td style='text-align:left'>{txt}</td></tr>"
-                st.markdown(f"""<table class="lle"><tr><th>Conta</th><th>Situação</th>
+                    conta_disp = f"{r['conta']} · {r['conta_desc']}" if r["conta_desc"] else f"{r['conta']}"
+                    linhas2 += (f"<tr><td style='text-align:center'>{conta_disp}</td>"
+                                f"<td style='text-align:center'>{chip(st_lab, cor)}</td>"
+                                f"<td style='text-align:left'>{txt}</td></tr>")
+                st.markdown(f"""<table class="lle"><tr><th style='text-align:center'>Conta</th>
+                    <th style='text-align:center'>Situação</th>
                     <th style='text-align:left'>Justificativa</th></tr>{linhas2}</table>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- administração
