@@ -1419,14 +1419,16 @@ def render_app(c, prof):
         cg = {}
 
     if is_ctrl:
-        t1, t2, t3, t4, t5, t6 = st.tabs(["📊 Acompanhamento", "📥 Justificativas recebidas",
-                                          "👥 Gestão de Gastos com Pessoal", "✏️ Manutenção Orçamento", "🔑 Administração de acessos", "⬆️ Importar dados"])
-        with t1: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
-        with t2: tela_painel(c, prof, banda, df_orc, cg)
-        with t3: tela_headcount(c, prof)
-        with t4: tela_editar_orcado(c, prof, df_orc)
-        with t5: tela_admin(c, prof)
-        with t6: tela_importar(c)
+        NAV = ["📊 Acompanhamento", "📥 Justificativas recebidas", "👥 Gestão de Gastos com Pessoal",
+               "✏️ Manutenção Orçamento", "🔑 Administração de acessos", "⬆️ Importar dados"]
+        aba = st.radio("Navegação", NAV, horizontal=True, key="nav_ctrl", label_visibility="collapsed")
+        st.markdown("<hr style='margin:.2rem 0 1rem; border:none; border-top:1px solid #E4E8F0'>", unsafe_allow_html=True)
+        if aba == NAV[0]:   tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
+        elif aba == NAV[1]: tela_painel(c, prof, banda, df_orc, cg)
+        elif aba == NAV[2]: tela_headcount(c, prof)
+        elif aba == NAV[3]: tela_editar_orcado(c, prof, df_orc)
+        elif aba == NAV[4]: tela_admin(c, prof)
+        elif aba == NAV[5]: tela_importar(c)
     else:
         tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
 
