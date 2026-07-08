@@ -142,6 +142,9 @@ def chunks(seq, n=500):
 def chip(label, cor):
     return f"<span class='chip' style='color:{cor}; background:{cor}1A; border:1px solid {cor}55;'>{label}</span>"
 
+def _toggle(k):
+    st.session_state[k] = not st.session_state.get(k, False)
+
 def classifica(raw, pct, conta_cod, banda):
     """Retorna (label, cor) respeitando a convenção de sinal e a faixa neutra."""
     invert = str(conta_cod)[:1] in ("3", "6")     # receita/dedução: sinal invertido
@@ -418,12 +421,11 @@ def tabela_evolucao(df, banda, mes_sel):
             lab, cor = classifica(raw, pct, "5", banda)
             vr_txt = brl(vr); var_txt = brl(raw); pctv = pct_txt(pct); status = chip(lab, cor)
         key = f"evo_open_{m}"
-        if key not in st.session_state: st.session_state[key] = False
-        exp = st.session_state[key]
+        exp = st.session_state.get(key, False)
         cbtn, cbody = st.columns([0.05, 0.95])
         with cbtn:
-            if st.button("\u25bc" if exp else "\u25b6", key=f"btn_{key}"):
-                st.session_state[key] = not exp; st.rerun()
+            st.button("\u25bc" if exp else "\u25b6", key=f"btn_{key}", on_click=_toggle, args=(key,))
+        exp = st.session_state.get(key, False)
         with cbody:
             bg = " style=\'background:#FFF7E6\'" if m == mes_sel else ""
             st.markdown(f"""<div class="drow"{bg}><div class="nm">{MESES[m]}</div>
@@ -491,13 +493,11 @@ def drill_desvios(d_mes, banda, mes):
 
     for cr_cod, cr_nome, vp, vr, raw, pct, lab, cor in rows:
         key = f"drill_{mes}_{cr_cod}"
-        if key not in st.session_state:
-            st.session_state[key] = False
-        exp = st.session_state[key]
+        exp = st.session_state.get(key, False)
         cbtn, cbody = st.columns([0.05, 0.95])
         with cbtn:
-            if st.button("▼" if exp else "▶", key=f"btn_{key}"):
-                st.session_state[key] = not exp; st.rerun()
+            st.button("▼" if exp else "▶", key=f"btn_{key}", on_click=_toggle, args=(key,))
+        exp = st.session_state.get(key, False)
         with cbody:
             st.markdown(f"""<div class="drow"><div class="nm">{cr_nome}</div>
                 <div class="r">{brl(vp)}</div><div class="r">{brl(vr)}</div>
