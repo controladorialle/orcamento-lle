@@ -1,6 +1,8 @@
 """
 LLE Orçamento — Acompanhamento orçado x realizado (Despesas)
 Streamlit + Supabase. Segredos: SUPABASE_URL e SUPABASE_ANON_KEY.
+Repaginação: menu horizontal (tabs), filtros no corpo, resumo em 2 colunas
+(Mês x Acumulado YTD) e drill-down por CR -> conta para os desvios.
 """
 import re
 import unicodedata
@@ -13,38 +15,103 @@ AZUL_PROFUNDO = "#071639"; AZUL_CORP = "#183F78"; AMARELO = "#F8B11E"
 VERDE = "#0F8C3B"; VERMELHO = "#C0392B"; CINZA_TXT = "#6B7583"
 CINZA_BG = "#F5F7FA"; LINHA = "#E4E8F0"
 
-st.set_page_config(page_title="LLE Orçamento", page_icon="📊", layout="wide")
+st.set_page_config(page_title="LLE Orçamento", page_icon="📊", layout="wide",
+                   initial_sidebar_state="collapsed")
 URL = st.secrets.get("SUPABASE_URL", ""); ANON = st.secrets.get("SUPABASE_ANON_KEY", "")
 MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 MABREV = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 STATUS_LABEL = {"PENDENTE": "Pendente", "JUSTIFICADO": "Justificado", "EM_REVISAO": "Em revisão", "DEVOLVIDO": "Devolvido", "APROVADO": "Aprovado"}
 
-LOGO = f"""<svg width="46" height="60" viewBox="0 0 32 44" xmlns="http://www.w3.org/2000/svg">
+LOGO = f"""<svg width="42" height="54" viewBox="0 0 32 44" xmlns="http://www.w3.org/2000/svg">
 <polygon points="16,2 23,9 16,16 9,9" fill="{AMARELO}"/><polygon points="16,10 23,17 16,24 9,17" fill="{AMARELO}"/>
 <polygon points="16,18 23,25 16,32 9,25" fill="{VERDE}"/><polygon points="16,26 23,33 16,40 9,33" fill="{AZUL_CORP}"/></svg>"""
 
 def inject_css():
     st.markdown(f"""<style>
+      @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+      html, body, [class*="css"], .stApp {{ font-family:'Montserrat',sans-serif; }}
       .stApp {{ background:{CINZA_BG}; }}
-      #MainMenu, footer {{ visibility:hidden; }}
+      #MainMenu, footer, header[data-testid="stHeader"] {{ visibility:hidden; }}
+      .block-container {{ padding-top:1.1rem; max-width:1360px; }}
       div.stButton>button[kind="primary"] {{ background:{AZUL_CORP}; border-color:{AZUL_CORP}; }}
       div.stButton>button[kind="primary"]:hover {{ background:{AZUL_PROFUNDO}; border-color:{AZUL_PROFUNDO}; }}
+
+      /* header */
       .lle-header {{ background:linear-gradient(135deg,{AZUL_PROFUNDO} 0%,{AZUL_CORP} 100%);
-        border-bottom:3px solid {AMARELO}; border-radius:10px; padding:14px 22px; display:flex;
-        align-items:center; gap:16px; margin-bottom:8px; }}
-      .lle-header h1 {{ color:#fff; font-size:20px; margin:0; }}
-      .lle-header p {{ color:rgba(255,255,255,.7); font-size:12px; margin:2px 0 0; }}
+        border-bottom:3px solid {AMARELO}; border-radius:12px; padding:15px 24px; display:flex;
+        align-items:center; justify-content:space-between; margin-bottom:10px;
+        box-shadow:0 4px 16px rgba(7,22,57,.15); }}
+      .lle-hl {{ display:flex; align-items:center; gap:15px; }}
+      .lle-header h1 {{ color:#fff; font-size:20px; font-weight:700; margin:0; letter-spacing:-.3px; }}
+      .lle-header p {{ color:rgba(255,255,255,.72); font-size:12px; margin:3px 0 0; font-weight:500; }}
+      .lle-badge {{ color:#fff; font-size:12px; font-weight:600; background:rgba(255,255,255,.12);
+        border:1px solid rgba(255,255,255,.22); border-radius:20px; padding:6px 14px; white-space:nowrap; }}
+      .lle-badge span {{ color:{AMARELO}; }}
+      .modtag {{ font-size:15px; font-weight:700; color:{AZUL_PROFUNDO}; margin:2px 0 2px; }}
+      .modsub {{ font-size:12px; color:{CINZA_TXT}; margin:0 0 8px; }}
+
+      /* tabs horizontais (barra navy + sublinhado dourado) */
+      .stTabs [data-baseweb="tab-list"] {{ gap:2px; background:{AZUL_PROFUNDO}; padding:0 10px;
+        border-radius:10px; margin-bottom:18px; box-shadow:0 3px 10px rgba(7,22,57,.14); }}
+      .stTabs [data-baseweb="tab"] {{ background:transparent; color:rgba(255,255,255,.72);
+        padding:13px 22px; font-weight:600; font-size:14px; border-bottom:3px solid transparent; }}
+      .stTabs [data-baseweb="tab"]:hover {{ color:#fff; background:rgba(255,255,255,.05); }}
+      .stTabs [aria-selected="true"] {{ color:{AMARELO} !important; background:transparent !important;
+        border-bottom:3px solid {AMARELO} !important; }}
+      .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] {{ display:none; }}
+
+      /* resumo em 2 colunas */
+      .resumo {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:4px 0 6px; }}
+      @media (max-width:820px) {{ .resumo {{ grid-template-columns:1fr; }} }}
+      .rpanel {{ background:#fff; border:1px solid {LINHA}; border-radius:12px; overflow:hidden;
+        box-shadow:0 2px 8px rgba(7,22,57,.05); }}
+      .rphead {{ background:{AZUL_PROFUNDO}; color:#fff; font-weight:700; font-size:13px;
+        letter-spacing:.04em; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; }}
+      .rphead .tag {{ font-size:10px; font-weight:600; color:{AMARELO}; }}
+      .rprow {{ display:flex; justify-content:space-between; align-items:center; padding:9px 16px;
+        border-bottom:1px solid #F0F2F6; font-size:13px; }}
+      .rprow:last-child {{ border-bottom:none; }}
+      .rprow span {{ color:{CINZA_TXT}; }}
+      .rprow b {{ color:{AZUL_PROFUNDO}; font-variant-numeric:tabular-nums; font-size:14px; }}
+      .rprow.big b {{ font-size:16px; }}
+
+      /* chips de status */
+      .chip {{ display:inline-block; font-size:11px; font-weight:700; padding:3px 11px; border-radius:20px; }}
+
+      /* cards contadores */
       .cards {{ display:flex; gap:12px; flex-wrap:wrap; margin:6px 0 4px; }}
-      .card {{ flex:1; min-width:150px; background:#fff; border:1px solid {LINHA}; border-radius:10px; padding:12px 14px; }}
-      .card .lab {{ font-size:11px; color:{CINZA_TXT}; text-transform:uppercase; letter-spacing:.03em; }}
-      .card .val {{ font-size:20px; color:{AZUL_PROFUNDO}; font-weight:600; margin-top:3px; }}
-      table.lle {{ border-collapse:collapse; width:100%; font-size:13px; background:#fff; }}
-      table.lle th {{ background:{AZUL_CORP}; color:#fff; padding:8px 10px; text-align:right; font-weight:600; }}
+      .card {{ flex:1; min-width:150px; background:#fff; border:1px solid {LINHA}; border-radius:12px;
+        padding:13px 16px; box-shadow:0 2px 8px rgba(7,22,57,.05); }}
+      .card .lab {{ font-size:11px; color:{CINZA_TXT}; text-transform:uppercase; letter-spacing:.04em; }}
+      .card .val {{ font-size:21px; color:{AZUL_PROFUNDO}; font-weight:700; margin-top:3px; }}
+
+      /* tabelas */
+      table.lle {{ border-collapse:collapse; width:100%; font-size:13px; background:#fff;
+        border-radius:10px; overflow:hidden; }}
+      table.lle th {{ background:{AZUL_CORP}; color:#fff; padding:9px 12px; text-align:right; font-weight:600; }}
       table.lle th:first-child {{ text-align:left; }}
-      table.lle td {{ padding:6px 10px; text-align:right; border-bottom:1px solid {LINHA}; }}
+      table.lle td {{ padding:7px 12px; text-align:right; border-bottom:1px solid {LINHA}; font-variant-numeric:tabular-nums; }}
       table.lle td:first-child {{ text-align:left; }}
       table.lle tr.total td {{ font-weight:700; border-top:2px solid {AZUL_CORP}; background:#EEF2F8; }}
+      table.lle tr.mark td {{ background:#FFF7E6; }}
       .scroll {{ overflow-x:auto; }}
+
+      /* linha-cabeça do drill (CR) */
+      .drow {{ display:grid; grid-template-columns:3.1fr 1.5fr 1.5fr 1.5fr 0.9fr 1.5fr; gap:0;
+        align-items:center; background:#fff; border:1px solid {LINHA}; border-radius:9px;
+        padding:9px 14px; font-size:13px; margin-bottom:2px; }}
+      .drow.head {{ background:{AZUL_PROFUNDO}; color:#fff; font-weight:600; border:none; }}
+      .drow .r {{ text-align:right; font-variant-numeric:tabular-nums; }}
+      .drow .nm {{ font-weight:600; color:{AZUL_PROFUNDO}; }}
+      div[data-testid="column"] div.stButton>button {{ padding:2px 0; border:1px solid {LINHA};
+        background:#fff; color:{AZUL_CORP}; font-weight:700; border-radius:7px; }}
+
+      /* rodapé */
+      .lle-foot {{ margin-top:34px; padding:16px 22px; background:linear-gradient(135deg,{AZUL_PROFUNDO} 0%,{AZUL_CORP} 100%);
+        border-radius:12px; display:flex; align-items:center; justify-content:space-between; }}
+      .lle-foot .t {{ color:#fff; font-weight:600; font-size:13px; }}
+      .lle-foot .s {{ color:#B8C5D9; font-size:11px; margin-top:3px; }}
+      .lle-foot .v {{ color:#B8C5D9; font-size:11px; text-align:right; }}
     </style>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- helpers
@@ -53,6 +120,9 @@ def brl(n): return "R$ " + f"{(n or 0):,.2f}".replace(",", "X").replace(".", ","
 def pct_txt(n): return f"{n:+.1f}".replace(".", ",") + "%"
 def chunks(seq, n=500):
     for i in range(0, len(seq), n): yield seq[i:i + n]
+
+def chip(label, cor):
+    return f"<span class='chip' style='color:{cor}; background:{cor}1A; border:1px solid {cor}55;'>{label}</span>"
 
 def classifica(raw, pct, conta_cod, banda):
     """Retorna (label, cor) respeitando a convenção de sinal e a faixa neutra."""
@@ -114,7 +184,7 @@ def perfil(c, email):
     return {"gestor_codigo": r.data[0]["gestor_codigo"], "nome": g.get("nome", email),
             "papel": g.get("papel", "gestor"), "senha_provisoria": bool(r.data[0].get("senha_provisoria", False))}
 
-# ---------------------------------------------------------------- login
+# ---------------------------------------------------------------- login / senha
 def tela_trocar_senha(c, email):
     inject_css()
     _, c2, _ = st.columns([1, 1.3, 1])
@@ -147,8 +217,8 @@ def tela_login():
     _, c2, _ = st.columns([1, 1.3, 1])
     with c2:
         st.markdown(f"""<div style="text-align:center; padding:26px 0 6px;"><div>{LOGO}</div>
-            <h1 style="color:{AZUL_PROFUNDO}; margin:12px 0 2px;">LLE Ferragens</h1>
-            <p style="color:{AZUL_CORP}; font-size:13px; margin:0;">Sistema de Orçamento · Controladoria</p></div>""", unsafe_allow_html=True)
+            <h1 style="color:{AZUL_PROFUNDO}; margin:12px 0 2px;">Sistema de Acompanhamento de Orçamento</h1>
+            <p style="color:{AZUL_CORP}; font-size:13px; margin:0;">LLE Ferragens · Controladoria</p></div>""", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("##### Acesso ao sistema")
             with st.form("login"):
@@ -168,29 +238,41 @@ def tela_login():
 
 def header(prof):
     papel = "Controladoria" if prof["papel"] == "controladoria" else "Gestor"
-    st.markdown(f"""<div class="lle-header">{LOGO}<div>
-        <h1>Acompanhamento orçado x realizado · Despesas</h1>
-        <p>{prof['nome']} · {papel}</p></div></div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="lle-header">
+        <div class="lle-hl">{LOGO}<div>
+          <h1>Sistema de Acompanhamento de Orçamento — LLE Ferragens</h1>
+          <p>{prof['nome']}</p></div></div>
+        <div class="lle-badge">GRUPO LLE <span>—</span> {papel}</div></div>""", unsafe_allow_html=True)
+
+def rodape():
+    st.markdown(f"""<div class="lle-foot">
+        <div style="display:flex; align-items:center; gap:12px;">{LOGO}
+          <div><div class="t">Sistema de Acompanhamento de Orçamento</div>
+          <div class="s">Controladoria · Grupo LLE Ferragens · 2026</div></div></div>
+        <div class="v"><div>Módulo Despesas · Orçado x Realizado</div>
+          <div style="opacity:.7; margin-top:3px;">Todos os direitos reservados</div></div></div>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- blocos de insight
-def cards(items):
-    html = "<div class='cards'>"
-    for lab, val, cor in items:
-        c = f"color:{cor};" if cor else ""
-        html += f"<div class='card'><div class='lab'>{lab}</div><div class='val' style='{c}'>{val}</div></div>"
-    st.markdown(html + "</div>", unsafe_allow_html=True)
-
-def kpis(df_mes, df_ytd, banda):
-    vp, vr = df_mes["valor_planejado"].sum(), df_mes["valor_realizado"].sum()
+def resumo_colunas(d_mes, d_ytd, banda, mes):
+    vp, vr = d_mes["valor_planejado"].sum(), d_mes["valor_realizado"].sum()
     raw, pct = var_de(vp, vr); lab, cor = classifica(raw, pct, "5", banda)
-    st.markdown("###### Resumo — mês selecionado")
-    cards([("Orçado", brl(vp), None), ("Realizado", brl(vr), None),
-           ("Variação (R$)", brl(raw), cor), ("Variação (%)", pct_txt(pct), cor), ("Status", lab, cor)])
-    yp, yr = df_ytd["valor_planejado"].sum(), df_ytd["valor_realizado"].sum()
+    yp, yr = d_ytd["valor_planejado"].sum(), d_ytd["valor_realizado"].sum()
     yraw, ypct = var_de(yp, yr); ylab, ycor = classifica(yraw, ypct, "5", banda)
-    st.markdown("###### Acumulado no ano (YTD até o mês)")
-    cards([("Orçado YTD", brl(yp), None), ("Realizado YTD", brl(yr), None),
-           ("Var. YTD (R$)", brl(yraw), ycor), ("Var. YTD (%)", pct_txt(ypct), ycor), ("Status YTD", ylab, ycor)])
+
+    def panel(titulo, tag, o, r, va, p, lab, cor):
+        return f"""<div class='rpanel'>
+          <div class='rphead'><span>{titulo}</span><span class='tag'>{tag}</span></div>
+          <div class='rprow'><span>Orçado</span><b>{brl(o)}</b></div>
+          <div class='rprow'><span>Realizado</span><b>{brl(r)}</b></div>
+          <div class='rprow'><span>Variação (R$)</span><b style='color:{cor}'>{brl(va)}</b></div>
+          <div class='rprow'><span>Variação (%)</span><b style='color:{cor}'>{pct_txt(p)}</b></div>
+          <div class='rprow big'><span>Status</span>{chip(lab, cor)}</div>
+        </div>"""
+
+    st.markdown("<div class='resumo'>"
+        + panel("MÊS", MESES[mes] + "/2026", vp, vr, raw, pct, lab, cor)
+        + panel("ACUMULADO YTD", f"Jan–{MABREV[mes]}/2026", yp, yr, yraw, ypct, ylab, ycor)
+        + "</div>", unsafe_allow_html=True)
 
 def contadores(df_mes, banda):
     fav = desf = neu = 0
@@ -198,10 +280,13 @@ def contadores(df_mes, banda):
         raw, pct = var_de(r["valor_planejado"], r["valor_realizado"])
         lab, _ = classifica(raw, pct, r["conta_cod"], banda)
         fav += lab == "Favorável"; desf += lab == "Desfavorável"; neu += lab == "Neutro"
-    cards([("# Lançamentos", len(df_mes), None), ("# Favoráveis", fav, VERDE),
-           ("# Desfavoráveis", desf, VERMELHO), ("# Neutros", neu, CINZA_TXT)])
+    html = "<div class='cards'>"
+    for lab, val, cor in [("Lançamentos", len(df_mes), AZUL_PROFUNDO), ("Favoráveis", fav, VERDE),
+                          ("Desfavoráveis", desf, VERMELHO), ("Neutros", neu, CINZA_TXT)]:
+        html += f"<div class='card'><div class='lab'>{lab}</div><div class='val' style='color:{cor}'>{val}</div></div>"
+    st.markdown(html + "</div>", unsafe_allow_html=True)
 
-def tabela_evolucao(df, banda):
+def tabela_evolucao(df, banda, mes_sel):
     g = df.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0)
     cum = g.cumsum()
     linhas = ""
@@ -212,53 +297,73 @@ def tabela_evolucao(df, banda):
             st_html = f"<td colspan='3' style='color:{CINZA_TXT}'>Sem realizado</td>"
         else:
             lab, cor = classifica(raw, pct, "5", banda)
-            st_html = f"<td style='color:{cor}'>{brl(raw)}</td><td style='color:{cor}'>{pct_txt(pct)}</td><td style='color:{cor}'>{lab}</td>"
+            st_html = f"<td style='color:{cor}'>{brl(raw)}</td><td style='color:{cor}'>{pct_txt(pct)}</td><td>{chip(lab, cor)}</td>"
         yvp, yvr = cum.loc[m, "valor_planejado"], cum.loc[m, "valor_realizado"]
         yraw, ypct = var_de(yvp, yvr); ylab, ycor = classifica(yraw, ypct, "5", banda)
         yhtml = (f"<td>{brl(yvr)}</td><td style='color:{ycor}'>{brl(yraw)}</td>"
                  f"<td style='color:{ycor}'>{pct_txt(ypct)}</td>") if yvr else "<td>—</td><td>—</td><td>—</td>"
-        linhas += f"<tr><td>{MESES[m]}</td><td>{brl(vp)}</td><td>{brl(vr) if vr else '—'}</td>{st_html}{yhtml}</tr>"
+        cls = " class='mark'" if m == mes_sel else ""
+        linhas += f"<tr{cls}><td>{MESES[m]}</td><td>{brl(vp)}</td><td>{brl(vr) if vr else '—'}</td>{st_html}{yhtml}</tr>"
     st.markdown(f"""<div class='scroll'><table class="lle"><tr>
         <th>Mês</th><th>Orçado</th><th>Realizado</th><th>Var. (R$)</th><th>Var. (%)</th><th>Status</th>
         <th>Realizado YTD</th><th>Var. YTD (R$)</th><th>Var. YTD (%)</th></tr>{linhas}</table></div>""", unsafe_allow_html=True)
 
-def tabela_cr(df_mes, banda):
-    tot = df_mes["valor_realizado"].sum() or 1
-    tot_o = df_mes["valor_planejado"].sum() or 1
-    g = df_mes.groupby("cr_nome")[["valor_planejado", "valor_realizado"]].sum().reset_index()
+# ---------------------------------------------------------------- DRILL-DOWN por CR -> conta
+def drill_desvios(d_mes, banda, mes):
+    if d_mes.empty:
+        st.info("Sem lançamentos para os filtros atuais."); return
+    only_desf = st.checkbox("Mostrar apenas centros com desvio desfavorável", value=False, key=f"drill_only_{mes}")
+
+    g = d_mes.groupby(["cr_cod", "cr_nome"], as_index=False)[["valor_planejado", "valor_realizado"]].sum()
     rows = []
     for _, r in g.iterrows():
         raw, pct = var_de(r["valor_planejado"], r["valor_realizado"])
         lab, cor = classifica(raw, pct, "5", banda)
-        rows.append((r["cr_nome"], r["valor_planejado"], r["valor_realizado"], raw, pct, lab, cor))
-    rows.sort(key=lambda x: x[3], reverse=True)
-    linhas = ""
-    for nome, vp, vr, raw, pct, lab, cor in rows:
-        linhas += (f"<tr><td>{nome}</td><td>{brl(vp)}</td><td>{vp/tot_o*100:.1f}%</td><td>{brl(vr)}</td>"
-                   f"<td>{vr/tot*100:.1f}%</td><td style='color:{cor}'>{brl(raw)}</td>"
-                   f"<td style='color:{cor}'>{pct_txt(pct)}</td><td style='color:{cor}'>{lab}</td></tr>")
-    tvp, tvr = df_mes["valor_planejado"].sum(), df_mes["valor_realizado"].sum()
-    traw, tpct = var_de(tvp, tvr); _, tcor = classifica(traw, tpct, "5", banda)
-    linhas += (f"<tr class='total'><td>Total</td><td>{brl(tvp)}</td><td>100%</td><td>{brl(tvr)}</td><td>100%</td>"
-               f"<td style='color:{tcor}'>{brl(traw)}</td><td style='color:{tcor}'>{pct_txt(tpct)}</td><td></td></tr>")
-    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
-        <th>Centro de resultado</th><th>Orçado</th><th>AV% Orç</th><th>Realizado</th><th>AV% Real</th>
-        <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}</table></div>""", unsafe_allow_html=True)
+        rows.append((int(r["cr_cod"]), r["cr_nome"], r["valor_planejado"], r["valor_realizado"], raw, pct, lab, cor))
+    if only_desf:
+        rows = [x for x in rows if x[6] == "Desfavorável"]
+    rows.sort(key=lambda x: x[4], reverse=True)
+    if not rows:
+        st.success("Nenhum centro de resultado com desvio desfavorável neste recorte."); return
 
-def top5(df_mes, banda):
-    recs = []
-    for _, r in df_mes.iterrows():
-        raw, pct = var_de(r["valor_planejado"], r["valor_realizado"])
-        lab, _ = classifica(raw, pct, r["conta_cod"], banda)
-        recs.append((r["conta_desc"], r["cr_nome"], r["valor_planejado"], r["valor_realizado"], raw, lab))
-    desf = sorted([x for x in recs if x[5] == "Desfavorável"], key=lambda x: x[4], reverse=True)[:5]
-    fav = sorted([x for x in recs if x[5] == "Favorável"], key=lambda x: x[4])[:5]
-    def bloco(titulo, dados, cor):
-        linhas = "".join(f"<tr><td>{d[0]}</td><td>{brl(d[3])}</td><td style='color:{cor}'>{brl(d[4])}</td></tr>" for d in dados) or "<tr><td colspan='3' style='color:#999'>—</td></tr>"
-        return f"""<table class="lle"><tr><th style='background:{cor}'>{titulo}</th><th style='background:{cor}'>Realizado</th><th style='background:{cor}'>Var. (R$)</th></tr>{linhas}</table>"""
-    a, b = st.columns(2)
-    a.markdown(bloco("Top 5 desfavoráveis (conta)", desf, VERMELHO), unsafe_allow_html=True)
-    b.markdown(bloco("Top 5 favoráveis (conta)", fav, VERDE), unsafe_allow_html=True)
+    st.caption("Clique em ▶ para abrir as contas do centro de resultado. Ordenado do maior gasto acima do previsto para o menor.")
+    # cabeçalho alinhado (mesma grade do corpo, com espaço para o botão)
+    ch1, ch2 = st.columns([0.05, 0.95])
+    ch2.markdown("""<div class="drow head"><div class="nm">Centro de resultado</div>
+        <div class="r">Orçado</div><div class="r">Realizado</div><div class="r">Var. (R$)</div>
+        <div class="r">Var. (%)</div><div class="r">Status</div></div>""", unsafe_allow_html=True)
+
+    for cr_cod, cr_nome, vp, vr, raw, pct, lab, cor in rows:
+        key = f"drill_{mes}_{cr_cod}"
+        if key not in st.session_state:
+            st.session_state[key] = False
+        exp = st.session_state[key]
+        cbtn, cbody = st.columns([0.05, 0.95])
+        with cbtn:
+            if st.button("▼" if exp else "▶", key=f"btn_{key}"):
+                st.session_state[key] = not exp; st.rerun()
+        with cbody:
+            st.markdown(f"""<div class="drow"><div class="nm">{cr_nome}</div>
+                <div class="r">{brl(vp)}</div><div class="r">{brl(vr)}</div>
+                <div class="r" style="color:{cor};font-weight:600">{brl(raw)}</div>
+                <div class="r" style="color:{cor}">{pct_txt(pct)}</div>
+                <div class="r">{chip(lab, cor)}</div></div>""", unsafe_allow_html=True)
+            if exp:
+                sub = d_mes[d_mes["cr_cod"] == cr_cod]
+                det = []
+                for _, v in sub.iterrows():
+                    rw, pc = var_de(v["valor_planejado"], v["valor_realizado"])
+                    lb, co = classifica(rw, pc, v["conta_cod"], banda)
+                    det.append((f"{v['conta_cod']} · {v.get('conta_desc','')}", v["valor_planejado"], v["valor_realizado"], rw, pc, lb, co))
+                det.sort(key=lambda x: x[3], reverse=True)
+                linhas = ""
+                for nome, o, r, rw, pc, lb, co in det:
+                    linhas += (f"<tr><td>{nome}</td><td>{brl(o)}</td><td>{brl(r)}</td>"
+                               f"<td style='color:{co}'>{brl(rw)}</td><td style='color:{co}'>{pct_txt(pc)}</td>"
+                               f"<td>{chip(lb, co)}</td></tr>")
+                st.markdown(f"""<div class='scroll' style='margin:2px 0 10px 8px;'><table class="lle"><tr>
+                    <th>Conta</th><th>Orçado</th><th>Realizado</th><th>Var. (R$)</th><th>Var. (%)</th><th>Status</th>
+                    </tr>{linhas}</table></div>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- justificativas
 def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
@@ -277,16 +382,35 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
         itens.append((v, raw, pct, j))
     itens.sort(key=lambda t: t[1], reverse=True)
     st.caption(f"{len(itens)} desvio(s) desfavorável(is) a justificar em {MESES[mes]}/2026")
+    st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP}
     for v, raw, pct, j in itens:
         status = j.get("status", "PENDENTE")
-        with st.expander(f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status)}]"):
+        titulo = f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status)}]"
+        with st.expander(titulo):
             a, b, d = st.columns(3)
             a.metric("Orçado", brl(v["valor_planejado"])); b.metric("Realizado", brl(v["valor_realizado"])); d.metric("Variação", brl(raw), pct_txt(pct))
+            st.markdown("**Composição do realizado por empresa**")
+            comp = (c.table("orc_realizado").select("uni_cod, unidade, valor_planejado, valor_realizado")
+                    .eq("ano", 2026).eq("mes", mes).eq("cr_cod", v["cr_cod"]).eq("conta_cod", v["conta_cod"]).execute().data or [])
+            if comp:
+                linhas = ""
+                for e in sorted(comp, key=lambda x: x["uni_cod"]):
+                    er, _ = var_de(e["valor_planejado"], e["valor_realizado"])
+                    cor = VERMELHO if er > 0 else VERDE
+                    nome = e.get("unidade") or ("PISA" if e["uni_cod"] == 1 else "KING" if e["uni_cod"] == 2 else f"Empresa {e['uni_cod']}")
+                    linhas += (f"<tr><td>{e['uni_cod']} · {nome}</td><td>{brl(e['valor_planejado'])}</td>"
+                               f"<td>{brl(e['valor_realizado'])}</td><td style='color:{cor}'>{brl(er)}</td></tr>")
+                st.markdown(f"""<table class="lle"><tr><th>Empresa</th><th>Orçado</th><th>Realizado</th><th>Variação</th></tr>{linhas}
+                    <tr class='total'><td>Net do CR</td><td>{brl(v['valor_planejado'])}</td><td>{brl(v['valor_realizado'])}</td><td>{brl(raw)}</td></tr></table>""", unsafe_allow_html=True)
             st.markdown("**Histórico das notas que compõem o realizado**")
-            det = (c.table("operacional_detalhe").select("num_doc, valor, historico").eq("ano", 2026).eq("mes", mes)
-                   .eq("uni_cod", v["uni_cod"]).eq("cr_cod", v["cr_cod"]).eq("conta_cod", v["conta_cod"]).execute().data or [])
+            det = (c.table("operacional_detalhe").select("uni_cod, num_doc, valor, historico").eq("ano", 2026).eq("mes", mes)
+                   .eq("cr_cod", v["cr_cod"]).eq("conta_cod", v["conta_cod"]).execute().data or [])
             if det:
-                dfd = pd.DataFrame(det); dfd["valor"] = dfd["valor"].map(brl); dfd.columns = ["NF/Doc", "Valor", "Histórico"]
+                dfd = pd.DataFrame(det)
+                dfd["uni_cod"] = dfd["uni_cod"].map(lambda u: f"{u} · {'PISA' if u == 1 else 'KING' if u == 2 else '—'}")
+                dfd["valor"] = dfd["valor"].map(brl)
+                dfd = dfd[["uni_cod", "num_doc", "valor", "historico"]]
+                dfd.columns = ["Empresa", "NF/Doc", "Valor", "Histórico"]
                 st.dataframe(dfd, use_container_width=True, hide_index=True)
             else:
                 st.caption("Sem detalhe operacional para esta conta neste mês.")
@@ -317,8 +441,10 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
     if not itens:
         st.success("Nenhum desvio desfavorável a justificar com os filtros atuais.")
 
-# ---------------------------------------------------------------- importar
+# ---------------------------------------------------------------- importar / config
 def tela_importar(c):
+    st.markdown("<div class='modtag'>Configuração e importação de dados</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Regras de classificação, cobrança e carga das bases mensais</div>", unsafe_allow_html=True)
     st.subheader("Configuração")
     atual = get_faixa(c)
     nova = st.number_input("Faixa neutra (±%) — regra de classificação para todos os gestores",
@@ -387,29 +513,23 @@ def tela_importar(c):
             c.table("operacional_detalhe").insert(ch).execute()
         st.success(f"{len(recs)} lançamentos com histórico importados.")
 
-def tela_painel(c, prof):
-    header(prof)
-    st.subheader("Justificativas recebidas")
-    mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026")
+# ---------------------------------------------------------------- painel de recebidas
+def tela_painel(c, prof, banda, df_orc, cg):
+    st.markdown("<div class='modtag'>Justificativas recebidas</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Pendências por gestor, resumo e detalhe das respostas</div>", unsafe_allow_html=True)
+    mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="painel_mes")
 
-    js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
-
-    # mapa CR -> (gestor, nome do CR)  [chave sempre inteira, para casar entre tabelas]
-    cg = {}
-    for r in (c.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []):
-        cg[(int(r["uni_cod"]), int(r["cr_cod"]))] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
-
-    # ----- Gerência de pendências (desvios desfavoráveis ainda não enviados) -----
     if mes < get_cobranca(c):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
         return
-    dfo = pd.DataFrame(ler_tudo(c, "orc_realizado", 2026))
-    dfo = dfo[dfo["mes"] == mes]
-    banda = get_faixa(c)
+
+    js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
+
+    # ----- Gerência de pendências (desvios desfavoráveis ainda não enviados) -----
+    dfo = df_orc[df_orc["mes"] == mes] if not df_orc.empty else df_orc
     enviadas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
     devolvidas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") == "DEVOLVIDO"}
-    # agrega pendências por gestor -> lista de contas
-    pend = {}   # gestor -> {"n","valor","devolv","itens":[...]}
+    pend = {}
     for _, v in dfo.iterrows():
         raw, pct = var_de(v["valor_planejado"], v["valor_realizado"])
         lab, _ = classifica(raw, pct, v["conta_cod"], banda)
@@ -418,7 +538,7 @@ def tela_painel(c, prof):
         chave = (int(v["uni_cod"]), int(v["cr_cod"]), int(v["conta_cod"]))
         if chave in enviadas:
             continue
-        gestor, _crn = cg.get((int(v["uni_cod"]), int(v["cr_cod"])), ("Sem gestor", ""))
+        gestor = cg.get((int(v["uni_cod"]), int(v["cr_cod"])), ("Sem gestor", ""))[0]
         d = pend.setdefault(gestor, {"n": 0, "valor": 0.0, "devolv": 0, "itens": []})
         d["n"] += 1; d["valor"] += raw
         dev = chave in devolvidas
@@ -457,7 +577,6 @@ def tela_painel(c, prof):
                        "_k": (j["uni_cod"], j["cr_cod"], j["conta_cod"])})
     df = pd.DataFrame(linhas)
 
-    # resumo por gestor
     st.markdown("###### Resumo por gestor")
     resumo = ""
     for gestor in sorted(df["gestor"].unique()):
@@ -470,8 +589,8 @@ def tela_painel(c, prof):
     st.markdown(f"""<table class="lle"><tr><th>Gestor</th><th>Total</th>
         <th>A responder</th><th>Aguardando controladoria</th><th>Aprovadas</th></tr>{resumo}</table>""", unsafe_allow_html=True)
 
-    # detalhe por gestor -> centro de resultado
     st.markdown("###### Detalhe por gestor e centro de resultado")
+    st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP}
     for gestor in sorted(df["gestor"].unique()):
         sub = df[df["gestor"] == gestor]
         with st.expander(f"{gestor} — {len(sub)} justificativa(s)"):
@@ -480,15 +599,16 @@ def tela_painel(c, prof):
                 linhas2 = ""
                 for _, r in sub[sub["cr"] == cr].iterrows():
                     st_lab = STATUS_LABEL.get(r["status"])
-                    cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT}.get(r["status"], AZUL_CORP)
+                    cor = st_cor.get(r["status"], AZUL_CORP)
                     txt = (r["texto"][:120] + "…") if len(r["texto"]) > 120 else (r["texto"] or "—")
-                    linhas2 += f"<tr><td>{r['conta']}</td><td style='color:{cor}'>{st_lab}</td><td style='text-align:left'>{txt}</td></tr>"
+                    linhas2 += f"<tr><td>{r['conta']}</td><td>{chip(st_lab, cor)}</td><td style='text-align:left'>{txt}</td></tr>"
                 st.markdown(f"""<table class="lle"><tr><th>Conta</th><th>Situação</th>
                     <th style='text-align:left'>Justificativa</th></tr>{linhas2}</table>""", unsafe_allow_html=True)
 
+# ---------------------------------------------------------------- administração
 def tela_admin(c, prof):
-    header(prof)
-    st.subheader("Administração de acessos")
+    st.markdown("<div class='modtag'>Administração de acessos</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Substituição por desligamento, ativação e transferência de centros</div>", unsafe_allow_html=True)
     st.caption("Substitua o e-mail de um gestor desligado, ative/desative acessos e transfira centros de resultado. "
                "O histórico de justificativas é sempre preservado.")
 
@@ -497,9 +617,8 @@ def tela_admin(c, prof):
     nome_por_cod = {g["codigo"]: g["nome"] for g in gestores}
     op_gestor = {f"{g['nome']} ({g['codigo']})": g["codigo"] for g in gestores}
 
-    aba = st.radio("Ação", ["Substituir e-mail (desligamento)", "Ativar / desativar acesso", "Transferir centro de resultado"], horizontal=False)
+    aba = st.radio("Ação", ["Substituir e-mail (desligamento)", "Ativar / desativar acesso", "Transferir centro de resultado"], horizontal=True)
 
-    # 1) SUBSTITUIR E-MAIL --------------------------------------------------
     if aba.startswith("Substituir"):
         st.markdown("###### Substituir o e-mail de um gestor")
         st.caption("O e-mail antigo é desativado (mantém o histórico) e o novo passa a acessar os mesmos centros de resultado.")
@@ -524,7 +643,6 @@ def tela_admin(c, prof):
                 st.success(f"Feito: {email_novo} agora responde por {nome_por_cod.get(cod, cod)}." + (f" {email_antigo} foi desativado." if email_antigo != '(nenhum)' else ""))
                 st.rerun()
 
-    # 2) ATIVAR / DESATIVAR -------------------------------------------------
     elif aba.startswith("Ativar"):
         st.markdown("###### Ativar ou desativar um acesso")
         if not usuarios:
@@ -540,7 +658,6 @@ def tela_admin(c, prof):
                     c.table("gestor_usuario").update({"ativo": novo_estado}).eq("email", u["email"]).execute()
                     st.rerun()
 
-    # 3) TRANSFERIR CR ------------------------------------------------------
     else:
         st.markdown("###### Transferir um centro de resultado para outro gestor")
         st.caption("Muda o dono do CR. As justificativas já feitas continuam registradas na conta/CR, sem alteração.")
@@ -555,52 +672,46 @@ def tela_admin(c, prof):
             st.rerun()
 
 # ---------------------------------------------------------------- acompanhamento
-def tela_acompanhamento(c, prof):
-    is_ctrl = prof["papel"] == "controladoria"
-    header(prof)
-    banda = get_faixa(c)
-    orc = ler_tudo(c, "orc_realizado", 2026)
-    if not orc:
-        st.info("Nenhum dado carregado ainda." + (" Use 'Importar dados'." if is_ctrl else " Fale com a controladoria.")); return
-    df = pd.DataFrame(orc)
-    resp_map = {}
-    if is_ctrl:
-        try:
-            for r in (c.table("cr_gestor").select("uni_cod, cr_cod, gestor(nome)").execute().data or []):
-                resp_map[(r["uni_cod"], r["cr_cod"])] = (r.get("gestor") or {}).get("nome", "—")
-        except Exception:
-            resp_map = {}
+def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
+    st.markdown("<div class='modtag'>Módulo Acompanhamento de Despesas — Orçado x Realizado</div>", unsafe_allow_html=True)
 
-    with st.sidebar:
-        st.markdown(f"<div style='text-align:center'>{LOGO}</div>", unsafe_allow_html=True)
-        st.markdown(f"**{prof['nome']}**"); st.caption("Controladoria" if is_ctrl else "Gestor")
-        st.caption(f"Faixa neutra vigente: ±{banda:.1f}%".replace(".", ","))
-        st.divider()
-        mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026")
-        st.markdown("**Filtros**")
-        if is_ctrl and resp_map:
-            df = df.copy(); df["_resp"] = df.apply(lambda r: resp_map.get((r["uni_cod"], r["cr_cod"]), "—"), axis=1)
-            resps = ["Todos"] + sorted(df["_resp"].dropna().unique().tolist())
-            f_resp = st.selectbox("Gestor", resps)
-            if f_resp != "Todos": df = df[df["_resp"] == f_resp]
-        unis = ["Todas"] + sorted(df["unidade"].dropna().unique().tolist())
-        f_uni = st.selectbox("Unidade", unis)
-        if f_uni != "Todas": df = df[df["unidade"] == f_uni]
-        crs = ["Todos"] + sorted(df["cr_nome"].dropna().unique().tolist())
-        f_cr = st.selectbox("Centro de resultado", crs)
-        if f_cr != "Todos": df = df[df["cr_nome"] == f_cr]
-        contas = ["Todas"] + sorted(df["conta_desc"].dropna().unique().tolist())
-        f_conta = st.selectbox("Conta", contas)
-        if f_conta != "Todas": df = df[df["conta_desc"] == f_conta]
-        st.divider()
-        if st.button("Sair"):
-            for k in ("access_token", "refresh_token", "email"): st.session_state.pop(k, None)
-            st.rerun()
+    if df_orc.empty:
+        st.info("Nenhum dado carregado ainda." + (" Use a aba 'Importar dados'." if is_ctrl else " Fale com a controladoria."))
+        return
+    df = df_orc.copy()
+    if is_ctrl and cg:
+        df["_resp"] = df.apply(lambda r: cg.get((int(r["uni_cod"]), int(r["cr_cod"])), ("—", ""))[0], axis=1)
+
+    # ---------- filtros horizontais ----------
+    ncols = 5 if is_ctrl else 4
+    fcols = st.columns([1.1, 1.5, 1.2, 1.7, 1.7] if is_ctrl else [1.1, 1.2, 1.7, 1.7])
+    i = 0
+    mes = fcols[i].selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="acomp_mes"); i += 1
+    if is_ctrl:
+        resps = ["Todos"] + sorted([r for r in df["_resp"].dropna().unique().tolist() if r])
+        f_resp = fcols[i].selectbox("Gestor", resps, key="acomp_gestor"); i += 1
+        if f_resp != "Todos": df = df[df["_resp"] == f_resp]
+    unis = ["Todas"] + sorted(df["unidade"].dropna().unique().tolist())
+    f_uni = fcols[i].selectbox("Unidade", unis, key="acomp_uni"); i += 1
+    if f_uni != "Todas": df = df[df["unidade"] == f_uni]
+    crs = ["Todos"] + sorted(df["cr_nome"].dropna().unique().tolist())
+    f_cr = fcols[i].selectbox("Centro de resultado", crs, key="acomp_cr"); i += 1
+    if f_cr != "Todos": df = df[df["cr_nome"] == f_cr]
+    contas = ["Todas"] + sorted(df["conta_desc"].dropna().unique().tolist())
+    f_conta = fcols[i].selectbox("Conta", contas, key="acomp_conta")
+    if f_conta != "Todas": df = df[df["conta_desc"] == f_conta]
+
+    # consolida empresas do mesmo CR+conta (net PISA + KING) por competência
+    chaves = ["mes", "cr_cod", "conta_cod"]
+    agg = {"valor_planejado": "sum", "valor_realizado": "sum",
+           "unidade": "first", "uni_cod": "min", "cr_nome": "first",
+           "conta_desc": "first", "cr_grupo": "first", "tipo_conta": "first", "classificacao": "first"}
+    df = df.groupby(chaves, as_index=False).agg(agg)
 
     d_mes = df[df["mes"] == mes]
     d_ytd = df[df["mes"] <= mes]
 
-    # pendências do mês (para o aviso do gestor): desvio desfavorável ainda não enviado
+    # aviso do gestor
     if not is_ctrl and mes < get_cobranca(c):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
     elif not is_ctrl:
@@ -613,23 +724,25 @@ def tela_acompanhamento(c, prof):
             if lab == "Desfavorável" and (v["uni_cod"], v["cr_cod"], v["conta_cod"]) not in enviadas:
                 pend += 1
         if pend:
-            st.warning(f"Você tem {pend} conta(s) a justificar em {MESES[mes]}/2026. Elas estão na seção Justificativas, ao final da página.")
+            st.warning(f"Você tem {pend} conta(s) a justificar em {MESES[mes]}/2026 — veja a seção Justificativas ao final.")
         else:
             st.success(f"Nenhuma justificativa pendente em {MESES[mes]}/2026.")
-    st.caption("Convenção: contas de receita/dedução (código 3 ou 6) têm sinal invertido — a variação mede o IMPACTO no resultado. "
-               "Verde = favorável (gastou/deduziu menos que o previsto), vermelho = desfavorável, cinza = dentro da faixa neutra.")
 
-    kpis(d_mes, d_ytd, banda)
-    st.markdown("###### Contadores do mês")
+    # ---------- resumo em 2 colunas ----------
+    resumo_colunas(d_mes, d_ytd, banda, mes)
     contadores(d_mes, banda)
+    st.caption("Convenção: contas de receita/dedução (código 3 ou 6) têm sinal invertido — a variação mede o IMPACTO no resultado. "
+               "Verde = favorável, vermelho = desfavorável, cinza = dentro da faixa neutra (±"
+               + f"{banda:.1f}".replace(".", ",") + "%).")
+
     st.divider()
-    st.markdown("#### Evolução mensal — Jan a Dez")
-    tabela_evolucao(df, banda)
+    st.markdown("#### Evolução mensal — Jan a Dez (mês e acumulado YTD)")
+    tabela_evolucao(df, banda, mes)
+
     st.divider()
-    st.markdown(f"#### Análise por centro de resultado — {MESES[mes]}")
-    tabela_cr(d_mes, banda)
-    st.markdown("#### Maiores desvios do mês (por conta)")
-    top5(d_mes, banda)
+    st.markdown(f"#### Desvios por centro de resultado — {MESES[mes]}/2026")
+    drill_desvios(d_mes, banda, mes)
+
     st.divider()
     st.markdown(f"#### Justificativas · {MESES[mes]}/2026")
     secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda)
@@ -648,11 +761,43 @@ def main():
         return
     if prof.get("senha_provisoria"):
         tela_trocar_senha(c, st.session_state.get("email", "")); return
-    if prof["papel"] == "controladoria":
-        aba = st.sidebar.radio("Menu", ["Acompanhamento", "Justificativas recebidas", "Administração de acessos", "Importar dados"])
-        if aba == "Importar dados": header(prof); tela_importar(c); return
-        if aba == "Justificativas recebidas": tela_painel(c, prof); return
-        if aba == "Administração de acessos": tela_admin(c, prof); return
-    tela_acompanhamento(c, prof)
+
+    is_ctrl = prof["papel"] == "controladoria"
+    banda = get_faixa(c)
+
+    header(prof)
+
+    # barra superior: faixa vigente + sair
+    tb = st.columns([6, 2.2, 1.1])
+    tb[1].markdown(
+        f"<div style='text-align:right; padding-top:6px; color:{CINZA_TXT}; font-size:12px;'>"
+        f"Faixa neutra vigente: <b style='color:{AZUL_PROFUNDO}'>±{banda:.1f}%</b>".replace(".", ",")
+        + (f" · Cobrança desde {MESES[get_cobranca(c)]}" if is_ctrl else "") + "</div>",
+        unsafe_allow_html=True)
+    if tb[2].button("Sair", key="sair_top", use_container_width=True):
+        for k in ("access_token", "refresh_token", "email"): st.session_state.pop(k, None)
+        st.rerun()
+
+    # dados compartilhados (carregados uma única vez)
+    orc = ler_tudo(c, "orc_realizado", 2026)
+    df_orc = pd.DataFrame(orc) if orc else pd.DataFrame()
+    cg = {}
+    try:
+        for r in (c.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []):
+            cg[(int(r["uni_cod"]), int(r["cr_cod"]))] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
+    except Exception:
+        cg = {}
+
+    if is_ctrl:
+        t1, t2, t3, t4 = st.tabs(["📊 Acompanhamento", "📥 Justificativas recebidas",
+                                  "🔑 Administração de acessos", "⬆️ Importar dados"])
+        with t1: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
+        with t2: tela_painel(c, prof, banda, df_orc, cg)
+        with t3: tela_admin(c, prof)
+        with t4: tela_importar(c)
+    else:
+        tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
+
+    rodape()
 
 main()
