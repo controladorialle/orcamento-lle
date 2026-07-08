@@ -748,20 +748,8 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
     secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda)
 
 # ---------------------------------------------------------------- main
-def main():
-    inject_css()
-    if not URL or not ANON:
-        st.error("Faltam os segredos SUPABASE_URL e SUPABASE_ANON_KEY."); return
-    if "access_token" not in st.session_state:
-        tela_login(); return
-    c = client(); prof = perfil(c, st.session_state.get("email", ""))
-    if not prof:
-        st.error("Seu e-mail não está cadastrado. Fale com a controladoria.")
-        if st.button("Sair"): st.session_state.clear(); st.rerun()
-        return
-    if prof.get("senha_provisoria"):
-        tela_trocar_senha(c, st.session_state.get("email", "")); return
-
+def render_app(c, prof):
+    """Renderiza o app autenticado (cabeçalho, barra, abas/telas e rodapé)."""
     is_ctrl = prof["papel"] == "controladoria"
     banda = get_faixa(c)
 
@@ -799,5 +787,33 @@ def main():
         tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
 
     rodape()
+
+def main():
+    inject_css()
+    if not URL or not ANON:
+        st.error("Faltam os segredos SUPABASE_URL e SUPABASE_ANON_KEY."); return
+
+    # Âncora única: login e app ocupam o MESMO espaço na árvore.
+    # Assim, ao autenticar, o app substitui a tela de login sem deixar "fantasma".
+    slot = st.empty()
+
+    if "access_token" not in st.session_state:
+        with slot.container():
+            tela_login()
+        return
+
+    c = client(); prof = perfil(c, st.session_state.get("email", ""))
+    if not prof:
+        with slot.container():
+            st.error("Seu e-mail não está cadastrado. Fale com a controladoria.")
+            if st.button("Sair"): st.session_state.clear(); st.rerun()
+        return
+    if prof.get("senha_provisoria"):
+        with slot.container():
+            tela_trocar_senha(c, st.session_state.get("email", ""))
+        return
+
+    with slot.container():
+        render_app(c, prof)
 
 main()
