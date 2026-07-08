@@ -234,6 +234,12 @@ def carregar_cr_gestor(): return _q_cr_gestor(*_tok())
 def carregar_justificativas(ano, mes): return _q_justif(*_tok(), ano, mes)
 def carregar_operacional(ano, mes): return _q_oper_mes(*_tok(), ano, mes)
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_justif_ano(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    return cc.table("justificativa").select("*").eq("ano", ano).execute().data or []
+def carregar_justificativas_ano(ano): return _q_justif_ano(*_tok(), ano)
+
 def limpar_cache():
     """Chamar após QUALQUER escrita para forçar dados frescos na próxima leitura."""
     try: st.cache_data.clear()
@@ -457,13 +463,27 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
     escolha = st.radio("Situação", opcoes, horizontal=True, key=f"just_filtro_{mes}")
     alvo = escolha.split(" (")[0]
     vis = itens if alvo == "Todas" else [it for it in itens if _st(it) in GRUPOS[alvo]]
-    st.caption(f"Exibindo {len(vis)} de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/2026")
     if not vis:
+        st.caption(f"Exibindo 0 de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/2026")
         st.info("Nenhuma conta nesta situação.")
         return
 
+    # paginação: desenhar centenas de expanders de uma vez deixava a página lenta
+    PAGE = 25
+    total = len(vis)
+    npag = (total + PAGE - 1) // PAGE
+    if npag > 1:
+        pagina = int(st.number_input("Página", min_value=1, max_value=npag, value=1, step=1, key=f"just_pag_{mes}_{alvo}"))
+        pagina = max(1, min(pagina, npag))
+        ini = (pagina - 1) * PAGE
+        page_vis = vis[ini:ini + PAGE]
+        st.caption(f"Exibindo {ini + 1}–{ini + len(page_vis)} de {total} · página {pagina} de {npag} — dica: filtre por Gestor ou Centro de resultado acima para reduzir a lista.")
+    else:
+        page_vis = vis
+        st.caption(f"Exibindo {total} de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/2026")
+
     oper_all = pd.DataFrame(carregar_operacional(2026, mes))
-    for v, raw, pct, j in vis:
+    for v, raw, pct, j in page_vis:
         status = j.get("status", "PENDENTE")
         titulo = f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status)}]"
         with st.expander(titulo):
@@ -581,10 +601,69 @@ def tela_importar(c):
         limpar_cache()
 
 # ---------------------------------------------------------------- painel de recebidas
+def relatorio_justificativas_xlsx(js_rows, df_orc, cg):
+    """Monta um .xlsx das justificativas inseridas, enriquecido com orçado/realizado/variação."""
+    import io
+    fin = {}
+    if df_orc is not None and not df_orc.empty:
+        for _, r in df_orc.iterrows():
+            fin[(int(r["mes"]), int(r["uni_cod"]), int(r["cr_cod"]), int(r["conta_cod"]))] = (
+                float(r["valor_planejado"] or 0), float(r["valor_realizado"] or 0),
+                r.get("unidade", "") or "", r.get("cr_nome", "") or "", r.get("conta_desc", "") or "")
+    linhas = []
+    for j in js_rows:
+        mes = int(j["mes"]); uni = int(j["uni_cod"]); cr = int(j["cr_cod"]); ct = int(j["conta_cod"])
+        vp, vr, unidade, cr_nome, conta_desc = fin.get((mes, uni, cr, ct), (0.0, 0.0, "", "", ""))
+        raw, pct = var_de(vp, vr)
+        gestor = cg.get((uni, cr), ("—", ""))[0]
+        if not cr_nome:
+            cr_nome = cg.get((uni, cr), ("", ""))[1]
+        if not unidade:
+            unidade = "PISA" if uni == 1 else "KING" if uni == 2 else f"Emp {uni}"
+        linhas.append({
+            "Ano": int(j.get("ano", 2026)), "Mês": MESES.get(mes, mes), "Nº Mês": mes,
+            "Gestor": gestor, "Cód. Unidade": uni, "Unidade": unidade,
+            "Cód. CR": cr, "Centro de Resultado": cr_nome,
+            "Cód. Conta": ct, "Descrição da Conta": conta_desc,
+            "Orçado": round(vp, 2), "Realizado": round(vr, 2),
+            "Variação (R$)": round(raw, 2), "Variação (%)": round(pct, 2),
+            "Situação": STATUS_LABEL.get(j.get("status", "PENDENTE"), j.get("status", "")),
+            "Justificativa": j.get("texto", "") or "",
+            "Comentário Controladoria": j.get("comentario_controladoria", "") or "",
+            "Atualizado por": j.get("atualizado_por", "") or "",
+            "Atualizado em": str(j.get("atualizado_em", "") or ""),
+        })
+    df = pd.DataFrame(linhas)
+    if not df.empty:
+        df = df.sort_values(["Nº Mês", "Gestor", "Centro de Resultado", "Cód. Conta"], kind="stable").drop(columns=["Nº Mês"])
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        df.to_excel(xw, index=False, sheet_name="Justificativas")
+    return buf.getvalue(), len(df)
+
 def tela_painel(c, prof, banda, df_orc, cg):
     st.markdown("<div class='modtag'>Justificativas recebidas</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Pendências por gestor, resumo e detalhe das respostas</div>", unsafe_allow_html=True)
     mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="painel_mes")
+
+    # ----- Exportar relatório (.xlsx) -----
+    with st.expander("📄 Exportar relatório de justificativas (.xlsx)"):
+        escopo = st.radio("Período", [f"Mês selecionado ({MESES[mes]}/2026)", "Ano inteiro (2026)"],
+                          horizontal=True, key="rel_escopo")
+        if st.button("Gerar relatório", key="rel_gen"):
+            ano_todo = escopo.startswith("Ano")
+            js_rel = carregar_justificativas_ano(2026) if ano_todo else carregar_justificativas(2026, mes)
+            dados, nlin = relatorio_justificativas_xlsx(js_rel, df_orc, cg)
+            st.session_state["rel_bytes"] = dados
+            st.session_state["rel_nome"] = "justificativas_2026.xlsx" if ano_todo else f"justificativas_{mes:02d}_2026.xlsx"
+            st.session_state["rel_n"] = nlin
+        if st.session_state.get("rel_bytes") is not None:
+            if st.session_state.get("rel_n", 0) == 0:
+                st.caption("Nenhuma justificativa inserida no período gerado.")
+            else:
+                st.download_button(f"⬇️ Baixar {st.session_state['rel_nome']} ({st.session_state['rel_n']} linha(s))",
+                                   data=st.session_state["rel_bytes"], file_name=st.session_state["rel_nome"],
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rel_dl")
 
     if mes < get_cobranca(c):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
