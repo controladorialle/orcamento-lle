@@ -261,12 +261,14 @@ def carregar_justificativas_ano(ano): return _q_justif_ano(*_tok(), ano)
 @st.cache_data(ttl=300, show_spinner=False)
 def _q_hc_quadro(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
-    return cc.table("hc_quadro").select("*").eq("ano", ano).execute().data or []
+    try: return cc.table("hc_quadro").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _q_hc_custo(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
-    return cc.table("hc_custo").select("*").eq("ano", ano).execute().data or []
+    try: return cc.table("hc_custo").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
 
 def carregar_hc_quadro(ano): return _q_hc_quadro(*_tok(), ano)
 def carregar_hc_custo(ano): return _q_hc_custo(*_tok(), ano)
@@ -274,8 +276,16 @@ def carregar_hc_custo(ano): return _q_hc_custo(*_tok(), ano)
 @st.cache_data(ttl=60, show_spinner=False)
 def _q_orc_log(tok, rtok, limite):
     cc = _cli_tok(tok, rtok)
-    return cc.table("orc_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+    try: return cc.table("orc_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+    except Exception: return []
 def carregar_orc_log(limite=200): return _q_orc_log(*_tok(), limite)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_hc_log(tok, rtok, limite):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("hc_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+    except Exception: return []
+def carregar_hc_log(limite=200): return _q_hc_log(*_tok(), limite)
 
 def limpar_cache():
     """Limpeza total — usar em importações (mudam orçado e operacional)."""
@@ -593,13 +603,13 @@ def modelo_hc_treasy_xlsx():
     return buf.getvalue()
 
 def tela_headcount(c, prof):
-    st.markdown("<div class='modtag'>Controle de Headcount</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modtag'>Gestão de Gastos com Pessoal</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Quadro de pessoal e gastos com pessoal — orçado x realizado (Unidade × CR × Cargo)</div>", unsafe_allow_html=True)
 
     q = pd.DataFrame(carregar_hc_quadro(2026))
     k = pd.DataFrame(carregar_hc_custo(2026))
     if q.empty and k.empty:
-        st.info("Nenhum dado de headcount ainda. Vá à aba **Importar dados**, seção *Headcount*, baixe o modelo e importe a planilha (padrão Treasy).")
+        st.info("Nenhum dado de pessoal ainda. Vá à aba **Importar dados**, seção *Gestão de Gastos com Pessoal*, baixe o modelo e importe a planilha (padrão Treasy).")
         return
     for col in ("qtd_orcada", "qtd_realizada"):
         if not q.empty and col not in q.columns: q[col] = 0
@@ -713,6 +723,112 @@ def tela_headcount(c, prof):
     else:
         st.caption("Sem dados de quadro para os filtros selecionados.")
 
+    # ---------- edição manual dos valores de pessoal (com log) ----------
+    st.divider()
+    st.markdown("#### Editar valores de pessoal")
+    if not cr_sel:
+        st.caption("Selecione uma **Unidade** e um **Centro de resultado** acima para editar quantidades e custos deste recorte.")
+    elif qf.empty and kf.empty:
+        st.caption("Nada para editar neste recorte.")
+    else:
+        st.caption("Ajuste headcount e custos por cargo. Toda alteração fica registrada no log.")
+        # --- grade de headcount (quantidade) ---
+        keys_q, disp_q, oqo, oqr = [], [], [], []
+        if not qf.empty:
+            qe = qf.sort_values("cargo_cod").reset_index(drop=True)
+            for r in qe.itertuples():
+                keys_q.append((int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), str(r.cargo_cod)))
+                oqo.append(round(float(getattr(r, "qtd_orcada", 0) or 0), 2))
+                oqr.append(round(float(getattr(r, "qtd_realizada", 0) or 0), 2))
+                disp_q.append(f"{r.cargo_cod} · {r.cargo_nome}")
+            dq = pd.DataFrame({"Cargo": disp_q, "HC orçado": oqo, "HC realizado": oqr})
+            st.markdown("**Quadro (quantidade de pessoas)**")
+            edq = st.data_editor(dq, key=f"hce_q_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
+                                 num_rows="fixed", disabled=["Cargo"],
+                                 column_config={"HC orçado": st.column_config.NumberColumn(format="%.0f", step=1),
+                                                "HC realizado": st.column_config.NumberColumn(format="%.0f", step=1)})
+        else:
+            edq = None
+        # --- grade de custo (por categoria) ---
+        keys_k, disp_cargo, disp_cat, oko, okr = [], [], [], [], []
+        if not kf.empty:
+            ke = kf.sort_values(["cargo_cod", "categoria"]).reset_index(drop=True)
+            for r in ke.itertuples():
+                keys_k.append((int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), str(r.cargo_cod), str(r.categoria)))
+                oko.append(round(float(getattr(r, "valor_orcado", 0) or 0), 2))
+                okr.append(round(float(getattr(r, "valor_realizado", 0) or 0), 2))
+                disp_cargo.append(f"{r.cargo_cod} · {r.cargo_nome}")
+                disp_cat.append(CAT_LABEL.get(str(r.categoria), str(r.categoria)))
+            dk = pd.DataFrame({"Cargo": disp_cargo, "Categoria": disp_cat, "Orçado": oko, "Realizado": okr})
+            st.markdown("**Custo por categoria**")
+            edk = st.data_editor(dk, key=f"hce_k_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
+                                 num_rows="fixed", disabled=["Cargo", "Categoria"],
+                                 column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                                                "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+        else:
+            edk = None
+
+        if st.button("Salvar alterações de pessoal", key="hce_save", type="primary"):
+            mudou = 0
+            if edq is not None:
+                no, nr = list(edq["HC orçado"]), list(edq["HC realizado"])
+                for i, kk in enumerate(keys_q):
+                    an, me, uni, cr, cgo = kk
+                    match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo)
+                    for coluna, novos, orig in (("qtd_orcada", no, oqo), ("qtd_realizada", nr, oqr)):
+                        try: nv = round(float(novos[i]), 2)
+                        except (TypeError, ValueError): continue
+                        if abs(nv - orig[i]) > 0.005:
+                            c.table("hc_quadro").update({coluna: nv}).match(match).execute()
+                            c.table("hc_log").insert(dict(**match, categoria=None, campo=coluna,
+                                valor_antigo=orig[i], valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
+                            mudou += 1
+            if edk is not None:
+                no, nr = list(edk["Orçado"]), list(edk["Realizado"])
+                for i, kk in enumerate(keys_k):
+                    an, me, uni, cr, cgo, cat = kk
+                    match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat)
+                    for coluna, novos, orig in (("valor_orcado", no, oko), ("valor_realizado", nr, okr)):
+                        try: nv = round(float(novos[i]), 2)
+                        except (TypeError, ValueError): continue
+                        if abs(nv - orig[i]) > 0.005:
+                            c.table("hc_custo").update({coluna: nv}).match(match).execute()
+                            c.table("hc_log").insert(dict(**match, campo=coluna,
+                                valor_antigo=orig[i], valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
+                            mudou += 1
+            if mudou:
+                limpar_cache()
+                st.success(f"{mudou} alteração(ões) de pessoal salva(s) e registrada(s) no log.")
+                st.rerun()
+            else:
+                st.info("Nenhuma alteração detectada.")
+
+    # ---------- histórico de alterações de pessoal ----------
+    log = carregar_hc_log(300)
+    if log:
+        st.markdown("###### Histórico de alterações de pessoal")
+        CAMPO_LAB = {"qtd_orcada": "HC orçado", "qtd_realizada": "HC realizado",
+                     "valor_orcado": "Custo orçado", "valor_realizado": "Custo realizado"}
+        linhas = ""
+        for g in log[:300]:
+            quando = str(g.get("alterado_em", "") or "")[:16].replace("T", " ")
+            va = float(g.get("valor_antigo") or 0); vn = float(g.get("valor_novo") or 0)
+            seta = VERMELHO if vn > va else VERDE
+            campo = g.get("campo", "")
+            eh_qtd = campo in ("qtd_orcada", "qtd_realizada")
+            de = (f"{va:.0f}" if eh_qtd else brl(va)); para = (f"{vn:.0f}" if eh_qtd else brl(vn))
+            cat = CAT_LABEL.get(g.get("categoria") or "", "—") if not eh_qtd else "—"
+            linhas += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{g.get('alterado_por','') or '—'}</td>"
+                       f"<td style='text-align:left'>{MESES[int(g.get('mes') or 1)]}</td>"
+                       f"<td style='text-align:left'>{g.get('cargo_cod','')}</td>"
+                       f"<td style='text-align:center'>{CAMPO_LAB.get(campo, campo)}</td>"
+                       f"<td style='text-align:left'>{cat}</td>"
+                       f"<td>{de}</td><td style='color:{seta}'>{para}</td></tr>")
+        st.markdown(f"""<table class="lle"><tr>
+            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+            <th style='text-align:left'>Cargo</th><th style='text-align:center'>Campo</th>
+            <th style='text-align:left'>Categoria</th><th>De</th><th>Para</th></tr>{linhas}</table>""", unsafe_allow_html=True)
+
 def tela_importar(c):
     st.markdown("<div class='modtag'>Configuração e importação de dados</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Regras de classificação, cobrança e carga das bases mensais</div>", unsafe_allow_html=True)
@@ -787,7 +903,7 @@ def tela_importar(c):
         limpar_cache()
 
     st.divider()
-    st.subheader("Headcount — planilha de pessoal (padrão Treasy)")
+    st.subheader("Gestão de Gastos com Pessoal — planilha (padrão Treasy)")
     st.caption("Arquivo único no layout Treasy: uma linha por unidade × CR × cargo, com QUANTIDADE_FUNCIONARIOS e as "
                "rubricas de custo. O sistema soma as rubricas nas 4 categorias automaticamente. Importe o arquivo de "
                "Realizado e, se tiver, o de Orçado — cada tipo preenche a sua coluna, sem apagar o outro.")
@@ -1005,7 +1121,7 @@ def tela_painel(c, prof, banda, df_orc, cg):
 
 # ---------------------------------------------------------------- edição manual do orçado
 def tela_editar_orcado(c, prof, df_orc):
-    st.markdown("<div class='modtag'>Ajuste manual de orçado e realizado</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modtag'>Manutenção do Orçamento</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Edite orçado e/ou realizado linha a linha — ideal para reclassificações no período, sem reimportar o arquivo. Toda alteração fica registrada no log.</div>", unsafe_allow_html=True)
     if df_orc is None or df_orc.empty:
         st.info("Base de orçado ainda não carregada. Importe na aba **Importar dados**.")
@@ -1262,7 +1378,7 @@ def render_app(c, prof):
 
     if is_ctrl:
         t1, t2, t3, t4, t5, t6 = st.tabs(["📊 Acompanhamento", "📥 Justificativas recebidas",
-                                          "👥 Headcount", "✏️ Editar orçado", "🔑 Administração de acessos", "⬆️ Importar dados"])
+                                          "👥 Gestão de Gastos com Pessoal", "✏️ Manutenção Orçamento", "🔑 Administração de acessos", "⬆️ Importar dados"])
         with t1: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
         with t2: tela_painel(c, prof, banda, df_orc, cg)
         with t3: tela_headcount(c, prof)
