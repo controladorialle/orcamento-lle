@@ -184,6 +184,61 @@ def perfil(c, email):
     return {"gestor_codigo": r.data[0]["gestor_codigo"], "nome": g.get("nome", email),
             "papel": g.get("papel", "gestor"), "senha_provisoria": bool(r.data[0].get("senha_provisoria", False))}
 
+# ---------------------------------------------------------------- leituras cacheadas
+# Cache por TOKEN do usuário: respeita o RLS (cada perfil só cacheia o que pode ver)
+# e é limpo em TODA escrita via limpar_cache(); TTL curto só como respaldo.
+def _cli_tok(tok, rtok):
+    cc = create_client(URL, ANON)
+    if tok and rtok:
+        try: cc.auth.set_session(tok, rtok)
+        except Exception: pass
+    return cc
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _q_orc(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    cols = "ano,mes,uni_cod,unidade,cr_cod,cr_nome,cr_grupo,conta_cod,conta_desc,valor_planejado,valor_realizado,tipo_conta,classificacao"
+    linhas, passo, ini = [], 1000, 0
+    while True:
+        lote = cc.table("orc_realizado").select(cols).eq("ano", ano).range(ini, ini + passo - 1).execute().data or []
+        linhas.extend(lote)
+        if len(lote) < passo: break
+        ini += passo
+    return linhas
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _q_cr_gestor(tok, rtok):
+    cc = _cli_tok(tok, rtok)
+    return cc.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_justif(tok, rtok, ano, mes):
+    cc = _cli_tok(tok, rtok)
+    return cc.table("justificativa").select("*").eq("ano", ano).eq("mes", mes).execute().data or []
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _q_oper_mes(tok, rtok, ano, mes):
+    cc = _cli_tok(tok, rtok)
+    linhas, passo, ini = [], 1000, 0
+    while True:
+        lote = (cc.table("operacional_detalhe").select("uni_cod,cr_cod,conta_cod,num_doc,valor,historico")
+                .eq("ano", ano).eq("mes", mes).range(ini, ini + passo - 1).execute().data or [])
+        linhas.extend(lote)
+        if len(lote) < passo: break
+        ini += passo
+    return linhas
+
+def _tok(): return st.session_state.get("access_token"), st.session_state.get("refresh_token")
+def carregar_orc(ano): return _q_orc(*_tok(), ano)
+def carregar_cr_gestor(): return _q_cr_gestor(*_tok())
+def carregar_justificativas(ano, mes): return _q_justif(*_tok(), ano, mes)
+def carregar_operacional(ano, mes): return _q_oper_mes(*_tok(), ano, mes)
+
+def limpar_cache():
+    """Chamar após QUALQUER escrita para forçar dados frescos na próxima leitura."""
+    try: st.cache_data.clear()
+    except Exception: pass
+
 # ---------------------------------------------------------------- login / senha
 def tela_trocar_senha(c, email):
     inject_css()
@@ -370,7 +425,7 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
     if mes < get_cobranca(c):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
         return
-    js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
+    js = carregar_justificativas(2026, mes)
     jmap = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]): j for j in js}
     itens = []
     for _, v in df_mes.iterrows():
@@ -383,6 +438,8 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
     itens.sort(key=lambda t: t[1], reverse=True)
     st.caption(f"{len(itens)} desvio(s) desfavorável(is) a justificar em {MESES[mes]}/2026")
     st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP}
+    raw_all = pd.DataFrame(carregar_orc(2026)) if itens else pd.DataFrame()
+    oper_all = pd.DataFrame(carregar_operacional(2026, mes)) if itens else pd.DataFrame()
     for v, raw, pct, j in itens:
         status = j.get("status", "PENDENTE")
         titulo = f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status)}]"
@@ -390,8 +447,8 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
             a, b, d = st.columns(3)
             a.metric("Orçado", brl(v["valor_planejado"])); b.metric("Realizado", brl(v["valor_realizado"])); d.metric("Variação", brl(raw), pct_txt(pct))
             st.markdown("**Composição do realizado por empresa**")
-            comp = (c.table("orc_realizado").select("uni_cod, unidade, valor_planejado, valor_realizado")
-                    .eq("ano", 2026).eq("mes", mes).eq("cr_cod", v["cr_cod"]).eq("conta_cod", v["conta_cod"]).execute().data or [])
+            comp = ([] if raw_all.empty else raw_all[(raw_all["mes"] == mes) & (raw_all["cr_cod"] == v["cr_cod"]) & (raw_all["conta_cod"] == v["conta_cod"])]
+                    [["uni_cod", "unidade", "valor_planejado", "valor_realizado"]].to_dict("records"))
             if comp:
                 linhas = ""
                 for e in sorted(comp, key=lambda x: x["uni_cod"]):
@@ -403,8 +460,8 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                 st.markdown(f"""<table class="lle"><tr><th>Empresa</th><th>Orçado</th><th>Realizado</th><th>Variação</th></tr>{linhas}
                     <tr class='total'><td>Net do CR</td><td>{brl(v['valor_planejado'])}</td><td>{brl(v['valor_realizado'])}</td><td>{brl(raw)}</td></tr></table>""", unsafe_allow_html=True)
             st.markdown("**Histórico das notas que compõem o realizado**")
-            det = (c.table("operacional_detalhe").select("uni_cod, num_doc, valor, historico").eq("ano", 2026).eq("mes", mes)
-                   .eq("cr_cod", v["cr_cod"]).eq("conta_cod", v["conta_cod"]).execute().data or [])
+            det = ([] if oper_all.empty else oper_all[(oper_all["cr_cod"] == v["cr_cod"]) & (oper_all["conta_cod"] == v["conta_cod"])]
+                   [["uni_cod", "num_doc", "valor", "historico"]].to_dict("records"))
             if det:
                 dfd = pd.DataFrame(det)
                 dfd["uni_cod"] = dfd["uni_cod"].map(lambda u: f"{u} · {'PISA' if u == 1 else 'KING' if u == 2 else '—'}")
@@ -422,11 +479,11 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                 txt = st.text_area("Justificativa", value=j.get("texto", "") or "", key=f"txt_{kb}")
                 c1, c2 = st.columns(2)
                 if c1.button("Salvar rascunho", key=f"sv_{kb}"):
-                    c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); st.rerun()
+                    c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache(); st.rerun()
                 if c2.button("Enviar justificativa", key=f"en_{kb}", type="primary"):
                     if not txt.strip(): st.error("Escreva a justificativa antes de enviar.")
                     else:
-                        c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); st.rerun()
+                        c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache(); st.rerun()
             elif not is_ctrl:
                 st.info(f"Justificativa: {j.get('texto') or '—'}"); st.caption("Aguardando a controladoria — não editável.")
             if is_ctrl:
@@ -435,9 +492,9 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                     coment = st.text_input("Comentário (para devolução)", key=f"cm_{kb}")
                     c1, c2 = st.columns(2)
                     if c1.button("Aprovar", key=f"ap_{kb}", type="primary"):
-                        c.table("justificativa").update({"status": "APROVADO"}).match(key).execute(); st.rerun()
+                        c.table("justificativa").update({"status": "APROVADO"}).match(key).execute(); limpar_cache(); st.rerun()
                     if c2.button("Devolver", key=f"dv_{kb}"):
-                        c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); st.rerun()
+                        c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); limpar_cache(); st.rerun()
     if not itens:
         st.success("Nenhum desvio desfavorável a justificar com os filtros atuais.")
 
@@ -493,6 +550,7 @@ def tela_importar(c):
         for ch in chunks(recs):
             c.table("orc_realizado").upsert(ch, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute()
         st.success(f"{len(recs)} linhas de orçado x realizado importadas.")
+        limpar_cache()
     f2 = st.file_uploader("2) Detalhe operacional (com COMPLHIST)", type=["xlsx"], key="f2")
     mes_op = st.number_input("Mês do arquivo operacional", value=6, min_value=1, max_value=12, step=1)
     if f2 and st.button("Importar histórico das notas"):
@@ -512,6 +570,7 @@ def tela_importar(c):
         for ch in chunks(recs):
             c.table("operacional_detalhe").insert(ch).execute()
         st.success(f"{len(recs)} lançamentos com histórico importados.")
+        limpar_cache()
 
 # ---------------------------------------------------------------- painel de recebidas
 def tela_painel(c, prof, banda, df_orc, cg):
@@ -523,7 +582,7 @@ def tela_painel(c, prof, banda, df_orc, cg):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
         return
 
-    js = c.table("justificativa").select("*").eq("ano", 2026).eq("mes", mes).execute().data or []
+    js = carregar_justificativas(2026, mes)
 
     # ----- Gerência de pendências (desvios desfavoráveis ainda não enviados) -----
     dfo = df_orc[df_orc["mes"] == mes] if not df_orc.empty else df_orc
@@ -639,7 +698,7 @@ def tela_admin(c, prof):
             else:
                 if email_antigo != "(nenhum)":
                     c.table("gestor_usuario").update({"ativo": False}).eq("email", email_antigo).execute()
-                c.table("gestor_usuario").upsert({"email": email_novo, "gestor_codigo": cod, "papel_acesso": "titular", "ativo": True, "senha_provisoria": True}, on_conflict="email").execute()
+                c.table("gestor_usuario").upsert({"email": email_novo, "gestor_codigo": cod, "papel_acesso": "titular", "ativo": True, "senha_provisoria": True}, on_conflict="email").execute(); limpar_cache()
                 st.success(f"Feito: {email_novo} agora responde por {nome_por_cod.get(cod, cod)}." + (f" {email_antigo} foi desativado." if email_antigo != '(nenhum)' else ""))
                 st.rerun()
 
@@ -655,7 +714,7 @@ def tela_admin(c, prof):
                 novo_estado = not u["ativo"]
                 rot = "Reativar" if not u["ativo"] else "Desativar"
                 if col3.button(rot, key=f"tog_{u['email']}"):
-                    c.table("gestor_usuario").update({"ativo": novo_estado}).eq("email", u["email"]).execute()
+                    c.table("gestor_usuario").update({"ativo": novo_estado}).eq("email", u["email"]).execute(); limpar_cache()
                     st.rerun()
 
     else:
@@ -667,7 +726,7 @@ def tela_admin(c, prof):
         destino = st.selectbox("Novo gestor responsável", list(op_gestor.keys()))
         if st.button("Transferir CR", type="primary"):
             uni, crc = op_cr[cr_sel]
-            c.table("cr_gestor").update({"gestor_codigo": op_gestor[destino]}).eq("uni_cod", uni).eq("cr_cod", crc).execute()
+            c.table("cr_gestor").update({"gestor_codigo": op_gestor[destino]}).eq("uni_cod", uni).eq("cr_cod", crc).execute(); limpar_cache()
             st.success(f"CR transferido para {destino.split(' (')[0]}.")
             st.rerun()
 
@@ -715,7 +774,7 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
     if not is_ctrl and mes < get_cobranca(c):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
     elif not is_ctrl:
-        js = c.table("justificativa").select("uni_cod,cr_cod,conta_cod,status").eq("ano", 2026).eq("mes", mes).execute().data or []
+        js = carregar_justificativas(2026, mes)
         enviadas = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
         pend = 0
         for _, v in d_mes.iterrows():
@@ -766,12 +825,12 @@ def render_app(c, prof):
         for k in ("access_token", "refresh_token", "email"): st.session_state.pop(k, None)
         st.rerun()
 
-    # dados compartilhados (carregados uma única vez)
-    orc = ler_tudo(c, "orc_realizado", 2026)
+    # dados compartilhados (cacheados por token — releituras idênticas ficam instantâneas)
+    orc = carregar_orc(2026)
     df_orc = pd.DataFrame(orc) if orc else pd.DataFrame()
     cg = {}
     try:
-        for r in (c.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []):
+        for r in carregar_cr_gestor():
             cg[(int(r["uni_cod"]), int(r["cr_cod"]))] = ((r.get("gestor") or {}).get("nome", "—"), r.get("cr_nome", ""))
     except Exception:
         cg = {}
