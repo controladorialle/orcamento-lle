@@ -436,11 +436,33 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
         j = jmap.get((v["uni_cod"], v["cr_cod"], v["conta_cod"]), {"status": "PENDENTE", "texto": "", "comentario_controladoria": ""})
         itens.append((v, raw, pct, j))
     itens.sort(key=lambda t: t[1], reverse=True)
-    st.caption(f"{len(itens)} desvio(s) desfavorável(is) a justificar em {MESES[mes]}/2026")
     st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP}
-    raw_all = pd.DataFrame(carregar_orc(2026)) if itens else pd.DataFrame()
-    oper_all = pd.DataFrame(carregar_operacional(2026, mes)) if itens else pd.DataFrame()
-    for v, raw, pct, j in itens:
+
+    if not itens:
+        st.success("Nenhum desvio desfavorável a justificar com os filtros atuais.")
+        return
+
+    # ----- filtro por situação (o gestor escolhe o que ver) -----
+    GRUPOS = {"A responder": {"PENDENTE", "DEVOLVIDO"},
+              "Aguardando controladoria": {"JUSTIFICADO", "EM_REVISAO"},
+              "Aprovadas": {"APROVADO"}}
+    def _st(it): return it[3].get("status", "PENDENTE")
+    n_resp = sum(1 for it in itens if _st(it) in GRUPOS["A responder"])
+    n_agu = sum(1 for it in itens if _st(it) in GRUPOS["Aguardando controladoria"])
+    n_apr = sum(1 for it in itens if _st(it) in GRUPOS["Aprovadas"])
+    opcoes = [f"Todas ({len(itens)})", f"A responder ({n_resp})",
+              f"Aguardando controladoria ({n_agu})", f"Aprovadas ({n_apr})"]
+    escolha = st.radio("Situação", opcoes, horizontal=True, key=f"just_filtro_{mes}")
+    alvo = escolha.split(" (")[0]
+    vis = itens if alvo == "Todas" else [it for it in itens if _st(it) in GRUPOS[alvo]]
+    st.caption(f"Exibindo {len(vis)} de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/2026")
+    if not vis:
+        st.info("Nenhuma conta nesta situação.")
+        return
+
+    raw_all = pd.DataFrame(carregar_orc(2026))
+    oper_all = pd.DataFrame(carregar_operacional(2026, mes))
+    for v, raw, pct, j in vis:
         status = j.get("status", "PENDENTE")
         titulo = f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status)}]"
         with st.expander(titulo):
@@ -495,8 +517,6 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                         c.table("justificativa").update({"status": "APROVADO"}).match(key).execute(); limpar_cache(); st.rerun()
                     if c2.button("Devolver", key=f"dv_{kb}"):
                         c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); limpar_cache(); st.rerun()
-    if not itens:
-        st.success("Nenhum desvio desfavorável a justificar com os filtros atuais.")
 
 # ---------------------------------------------------------------- importar / config
 def tela_importar(c):
@@ -787,24 +807,26 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
         else:
             st.success(f"Nenhuma justificativa pendente em {MESES[mes]}/2026.")
 
-    # ---------- resumo em 2 colunas ----------
-    resumo_colunas(d_mes, d_ytd, banda, mes)
-    contadores(d_mes, banda)
-    st.caption("Convenção: contas de receita/dedução (código 3 ou 6) têm sinal invertido — a variação mede o IMPACTO no resultado. "
-               "Verde = favorável, vermelho = desfavorável, cinza = dentro da faixa neutra (±"
-               + f"{banda:.1f}".replace(".", ",") + "%).")
-
+    # ---------- submenu de seções (uma por vez -> menos rolagem, menos carga) ----------
+    secao = st.radio("Seção", ["📌 Resumo", "📈 Evolução mensal", "🔎 Desvios por CR", "📝 Justificativas"],
+                     horizontal=True, key="acomp_secao", label_visibility="collapsed")
     st.divider()
-    st.markdown("#### Evolução mensal — Jan a Dez (mês e acumulado YTD)")
-    tabela_evolucao(df, banda, mes)
 
-    st.divider()
-    st.markdown(f"#### Desvios por centro de resultado — {MESES[mes]}/2026")
-    drill_desvios(d_mes, banda, mes)
-
-    st.divider()
-    st.markdown(f"#### Justificativas · {MESES[mes]}/2026")
-    secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda)
+    if secao.endswith("Resumo"):
+        resumo_colunas(d_mes, d_ytd, banda, mes)
+        contadores(d_mes, banda)
+        st.caption("Convenção: contas de receita/dedução (código 3 ou 6) têm sinal invertido — a variação mede o IMPACTO no resultado. "
+                   "Verde = favorável, vermelho = desfavorável, cinza = dentro da faixa neutra (±"
+                   + f"{banda:.1f}".replace(".", ",") + "%).")
+    elif "Evolução" in secao:
+        st.markdown("#### Evolução mensal — Jan a Dez (mês e acumulado YTD)")
+        tabela_evolucao(df, banda, mes)
+    elif "Desvios" in secao:
+        st.markdown(f"#### Desvios por centro de resultado — {MESES[mes]}/2026")
+        drill_desvios(d_mes, banda, mes)
+    else:
+        st.markdown(f"#### Justificativas · {MESES[mes]}/2026")
+        secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda)
 
 # ---------------------------------------------------------------- main
 def render_app(c, prof):
