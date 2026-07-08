@@ -241,9 +241,15 @@ def _q_justif_ano(tok, rtok, ano):
 def carregar_justificativas_ano(ano): return _q_justif_ano(*_tok(), ano)
 
 def limpar_cache():
-    """Chamar após QUALQUER escrita para forçar dados frescos na próxima leitura."""
+    """Limpeza total — usar em importações (mudam orçado e operacional)."""
     try: st.cache_data.clear()
     except Exception: pass
+
+def limpar_cache_justif():
+    """Limpeza cirúrgica após ações de justificativa: NÃO derruba orçado/operacional (que são pesados)."""
+    for f in (_q_justif, _q_justif_ano):
+        try: f.clear()
+        except Exception: pass
 
 # ---------------------------------------------------------------- login / senha
 def tela_trocar_senha(c, email):
@@ -482,7 +488,15 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
         page_vis = vis
         st.caption(f"Exibindo {total} de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/2026")
 
-    oper_all = pd.DataFrame(carregar_operacional(2026, mes))
+    # histórico só das contas desta página (evita carregar as ~50 mil notas do mês inteiro)
+    contas_pg = sorted({int(v["conta_cod"]) for v, _, _, _ in page_vis})
+    crs_pg = sorted({int(v["cr_cod"]) for v, _, _, _ in page_vis})
+    try:
+        _op = (c.table("operacional_detalhe").select("uni_cod,cr_cod,conta_cod,num_doc,valor,historico")
+               .eq("ano", 2026).eq("mes", mes).in_("cr_cod", crs_pg).in_("conta_cod", contas_pg).execute().data or [])
+    except Exception:
+        _op = []
+    oper_all = pd.DataFrame(_op)
     for v, raw, pct, j in page_vis:
         status = j.get("status", "PENDENTE")
         titulo = f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status)}]"
@@ -509,11 +523,11 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                 txt = st.text_area("Justificativa", value=j.get("texto", "") or "", key=f"txt_{kb}")
                 c1, c2 = st.columns(2)
                 if c1.button("Salvar rascunho", key=f"sv_{kb}"):
-                    c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache(); st.rerun()
+                    c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
                 if c2.button("Enviar justificativa", key=f"en_{kb}", type="primary"):
                     if not txt.strip(): st.error("Escreva a justificativa antes de enviar.")
                     else:
-                        c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache(); st.rerun()
+                        c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
             elif not is_ctrl:
                 st.info(f"Justificativa: {j.get('texto') or '—'}"); st.caption("Aguardando a controladoria — não editável.")
             if is_ctrl:
@@ -522,9 +536,9 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                     coment = st.text_input("Comentário (para devolução)", key=f"cm_{kb}")
                     c1, c2 = st.columns(2)
                     if c1.button("Aprovar", key=f"ap_{kb}", type="primary"):
-                        c.table("justificativa").update({"status": "APROVADO"}).match(key).execute(); limpar_cache(); st.rerun()
+                        c.table("justificativa").update({"status": "APROVADO"}).match(key).execute(); limpar_cache_justif(); st.rerun()
                     if c2.button("Devolver", key=f"dv_{kb}"):
-                        c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); limpar_cache(); st.rerun()
+                        c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); limpar_cache_justif(); st.rerun()
 
 # ---------------------------------------------------------------- importar / config
 def tela_importar(c):
