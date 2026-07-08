@@ -409,7 +409,9 @@ def drill_desvios(d_mes, banda, mes):
                 for _, v in sub.iterrows():
                     rw, pc = var_de(v["valor_planejado"], v["valor_realizado"])
                     lb, co = classifica(rw, pc, v["conta_cod"], banda)
-                    det.append((f"{v['conta_cod']} · {v.get('conta_desc','')}", v["valor_planejado"], v["valor_realizado"], rw, pc, lb, co))
+                    _emp = v.get("unidade", "") or ""
+                    _cta = f"{v['conta_cod']} · {v.get('conta_desc','')}" + (f" ({_emp})" if _emp else "")
+                    det.append((_cta, v["valor_planejado"], v["valor_realizado"], rw, pc, lb, co))
                 det.sort(key=lambda x: x[3], reverse=True)
                 linhas = ""
                 for nome, o, r, rw, pc, lb, co in det:
@@ -426,14 +428,14 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
         return
     js = carregar_justificativas(2026, mes)
-    jmap = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]): j for j in js}
+    jmap = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])): j for j in js}
     itens = []
     for _, v in df_mes.iterrows():
         raw, pct = var_de(v["valor_planejado"], v["valor_realizado"])
         lab, _ = classifica(raw, pct, v["conta_cod"], banda)
         if lab != "Desfavorável":
             continue
-        j = jmap.get((v["uni_cod"], v["cr_cod"], v["conta_cod"]), {"status": "PENDENTE", "texto": "", "comentario_controladoria": ""})
+        j = jmap.get((int(v["uni_cod"]), int(v["cr_cod"]), int(v["conta_cod"])), {"status": "PENDENTE", "texto": "", "comentario_controladoria": ""})
         itens.append((v, raw, pct, j))
     itens.sort(key=lambda t: t[1], reverse=True)
     st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP}
@@ -460,7 +462,6 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
         st.info("Nenhuma conta nesta situação.")
         return
 
-    raw_all = pd.DataFrame(carregar_orc(2026))
     oper_all = pd.DataFrame(carregar_operacional(2026, mes))
     for v, raw, pct, j in vis:
         status = j.get("status", "PENDENTE")
@@ -468,21 +469,8 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
         with st.expander(titulo):
             a, b, d = st.columns(3)
             a.metric("Orçado", brl(v["valor_planejado"])); b.metric("Realizado", brl(v["valor_realizado"])); d.metric("Variação", brl(raw), pct_txt(pct))
-            st.markdown("**Composição do realizado por empresa**")
-            comp = ([] if raw_all.empty else raw_all[(raw_all["mes"] == mes) & (raw_all["cr_cod"] == v["cr_cod"]) & (raw_all["conta_cod"] == v["conta_cod"])]
-                    [["uni_cod", "unidade", "valor_planejado", "valor_realizado"]].to_dict("records"))
-            if comp:
-                linhas = ""
-                for e in sorted(comp, key=lambda x: x["uni_cod"]):
-                    er, _ = var_de(e["valor_planejado"], e["valor_realizado"])
-                    cor = VERMELHO if er > 0 else VERDE
-                    nome = e.get("unidade") or ("PISA" if e["uni_cod"] == 1 else "KING" if e["uni_cod"] == 2 else f"Empresa {e['uni_cod']}")
-                    linhas += (f"<tr><td>{e['uni_cod']} · {nome}</td><td>{brl(e['valor_planejado'])}</td>"
-                               f"<td>{brl(e['valor_realizado'])}</td><td style='color:{cor}'>{brl(er)}</td></tr>")
-                st.markdown(f"""<table class="lle"><tr><th>Empresa</th><th>Orçado</th><th>Realizado</th><th>Variação</th></tr>{linhas}
-                    <tr class='total'><td>Net do CR</td><td>{brl(v['valor_planejado'])}</td><td>{brl(v['valor_realizado'])}</td><td>{brl(raw)}</td></tr></table>""", unsafe_allow_html=True)
-            st.markdown("**Histórico das notas que compõem o realizado**")
-            det = ([] if oper_all.empty else oper_all[(oper_all["cr_cod"] == v["cr_cod"]) & (oper_all["conta_cod"] == v["conta_cod"])]
+            st.markdown(f"**Histórico das notas — {v.get('unidade', '')}**")
+            det = ([] if oper_all.empty else oper_all[(oper_all["uni_cod"] == v["uni_cod"]) & (oper_all["cr_cod"] == v["cr_cod"]) & (oper_all["conta_cod"] == v["conta_cod"])]
                    [["uni_cod", "num_doc", "valor", "historico"]].to_dict("records"))
             if det:
                 dfd = pd.DataFrame(det)
@@ -604,7 +592,7 @@ def tela_painel(c, prof, banda, df_orc, cg):
 
     js = carregar_justificativas(2026, mes)
 
-    # ----- Gerência de pendências (desvios desfavoráveis ainda não enviados) -----
+    # ----- Pendências por empresa (mesma régua do gestor: por unidade + CR + conta) -----
     dfo = df_orc[df_orc["mes"] == mes] if not df_orc.empty else df_orc
     enviadas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
     devolvidas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") == "DEVOLVIDO"}
@@ -622,7 +610,7 @@ def tela_painel(c, prof, banda, df_orc, cg):
         d["n"] += 1; d["valor"] += raw
         dev = chave in devolvidas
         if dev: d["devolv"] += 1
-        d["itens"].append({"cr": v.get("cr_nome", ""), "conta": f"{v['conta_cod']} · {v.get('conta_desc','')}", "raw": raw, "dev": dev})
+        d["itens"].append({"cr": v.get("cr_nome", ""), "conta": f"{v['conta_cod']} · {v.get('conta_desc','')} ({v.get('unidade','')})", "raw": raw, "dev": dev})
 
     st.markdown("###### Pendências por gestor (desvios desfavoráveis ainda não justificados)")
     if not pend:
@@ -652,7 +640,7 @@ def tela_painel(c, prof, banda, df_orc, cg):
     linhas = []
     for j in js:
         gestor, cr_nome = cg.get((j["uni_cod"], j["cr_cod"]), ("—", str(j["cr_cod"])))
-        linhas.append({"gestor": gestor, "cr": cr_nome, "cr_cod": int(j["cr_cod"]),
+        linhas.append({"gestor": gestor, "cr": cr_nome, "cr_cod": int(j["cr_cod"]), "uni_cod": int(j["uni_cod"]),
                        "conta": j["conta_cod"], "conta_desc": desc_map.get(int(j["conta_cod"]), ""),
                        "status": j.get("status", "PENDENTE"), "texto": j.get("texto", "") or "",
                        "comentario": j.get("comentario_controladoria", "") or "",
@@ -685,7 +673,8 @@ def tela_painel(c, prof, banda, df_orc, cg):
                     st_lab = STATUS_LABEL.get(r["status"])
                     cor = st_cor.get(r["status"], AZUL_CORP)
                     txt = (r["texto"][:120] + "…") if len(r["texto"]) > 120 else (r["texto"] or "—")
-                    conta_disp = f"{r['conta']} · {r['conta_desc']}" if r["conta_desc"] else f"{r['conta']}"
+                    _emp = "PISA" if r["uni_cod"] == 1 else "KING" if r["uni_cod"] == 2 else f"Emp {r['uni_cod']}"
+                    conta_disp = (f"{r['conta']} · {r['conta_desc']} ({_emp})" if r["conta_desc"] else f"{r['conta']} ({_emp})")
                     linhas2 += (f"<tr><td style='text-align:center'>{conta_disp}</td>"
                                 f"<td style='text-align:center'>{chip(st_lab, cor)}</td>"
                                 f"<td style='text-align:left'>{txt}</td></tr>")
@@ -789,13 +778,7 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
     f_conta = fcols[i].selectbox("Conta", contas, key="acomp_conta")
     if f_conta != "Todas": df = df[df["conta_desc"] == f_conta]
 
-    # consolida empresas do mesmo CR+conta (net PISA + KING) por competência
-    chaves = ["mes", "cr_cod", "conta_cod"]
-    agg = {"valor_planejado": "sum", "valor_realizado": "sum",
-           "unidade": "first", "uni_cod": "min", "cr_nome": "first",
-           "conta_desc": "first", "cr_grupo": "first", "tipo_conta": "first", "classificacao": "first"}
-    df = df.groupby(chaves, as_index=False).agg(agg)
-
+    # SEM consolidação: cada empresa (PISA/KING) vira uma linha própria por CR+conta
     d_mes = df[df["mes"] == mes]
     d_ytd = df[df["mes"] <= mes]
 
@@ -804,12 +787,12 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
         st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
     elif not is_ctrl:
         js = carregar_justificativas(2026, mes)
-        enviadas = {(j["uni_cod"], j["cr_cod"], j["conta_cod"]) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
+        enviadas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
         pend = 0
         for _, v in d_mes.iterrows():
             raw, pct = var_de(v["valor_planejado"], v["valor_realizado"])
             lab, _ = classifica(raw, pct, v["conta_cod"], banda)
-            if lab == "Desfavorável" and (v["uni_cod"], v["cr_cod"], v["conta_cod"]) not in enviadas:
+            if lab == "Desfavorável" and (int(v["uni_cod"]), int(v["cr_cod"]), int(v["conta_cod"])) not in enviadas:
                 pend += 1
         if pend:
             st.warning(f"Você tem {pend} conta(s) a justificar em {MESES[mes]}/2026 — veja a seção Justificativas ao final.")
