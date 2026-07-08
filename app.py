@@ -403,57 +403,66 @@ def contadores(df_mes, banda):
 def tabela_evolucao(df, banda, mes_sel):
     g = df.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0)
     cum = g.cumsum()
-    linhas = ""
+    st.caption("Clique em \u25b6 para abrir o orçado por conta e empresa do mês. YTD = acumulado até o mês.")
+    ch1, ch2 = st.columns([0.05, 0.95])
+    ch2.markdown("""<div class="drow head"><div class="nm">Mês</div>
+        <div class="r">Orçado</div><div class="r">Realizado</div><div class="r">Var. (R$)</div>
+        <div class="r">Var. (%)</div><div class="r">Status</div></div>""", unsafe_allow_html=True)
+
     for m in range(1, 13):
-        vp, vr = g.loc[m, "valor_planejado"], g.loc[m, "valor_realizado"]
+        vp = float(g.loc[m, "valor_planejado"]); vr = float(g.loc[m, "valor_realizado"])
         raw, pct = var_de(vp, vr)
         if vr == 0:
-            st_html = f"<td colspan='3' style='color:{CINZA_TXT}'>Sem realizado</td>"
+            cor = CINZA_TXT; vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem realizado", CINZA_TXT)
         else:
             lab, cor = classifica(raw, pct, "5", banda)
-            st_html = f"<td style='color:{cor}'>{brl(raw)}</td><td style='color:{cor}'>{pct_txt(pct)}</td><td>{chip(lab, cor)}</td>"
-        yvp, yvr = cum.loc[m, "valor_planejado"], cum.loc[m, "valor_realizado"]
-        yraw, ypct = var_de(yvp, yvr); ylab, ycor = classifica(yraw, ypct, "5", banda)
-        yhtml = (f"<td>{brl(yvr)}</td><td style='color:{ycor}'>{brl(yraw)}</td>"
-                 f"<td style='color:{ycor}'>{pct_txt(ypct)}</td>") if yvr else "<td>—</td><td>—</td><td>—</td>"
-        cls = " class='mark'" if m == mes_sel else ""
-        linhas += f"<tr{cls}><td>{MESES[m]}</td><td>{brl(vp)}</td><td>{brl(vr) if vr else '—'}</td>{st_html}{yhtml}</tr>"
-    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
-        <th>Mês</th><th>Orçado</th><th>Realizado</th><th>Var. (R$)</th><th>Var. (%)</th><th>Status</th>
-        <th>Realizado YTD</th><th>Var. YTD (R$)</th><th>Var. YTD (%)</th></tr>{linhas}</table></div>""", unsafe_allow_html=True)
-
-    # ---------- drill do mês: orçado por conta e empresa ----------
-    st.markdown("###### Detalhe do mês — orçado por conta e empresa")
-    md = st.selectbox("Mês para detalhar", list(range(1, 13)),
-                      index=(mes_sel - 1 if 1 <= mes_sel <= 12 else 0),
-                      format_func=lambda m: f"{MESES[m]}/2026", key="evo_drill_mes")
-    det = df[df["mes"] == md].copy()
-    if det.empty:
-        st.caption(f"Nenhum lançamento em {MESES[md]}/2026 para os filtros selecionados.")
-        return
-    det = det.sort_values(["cr_nome", "conta_cod", "uni_cod"])
-    to = float(det["valor_planejado"].sum()); tr = float(det["valor_realizado"].sum())
-    tv = tr - to
-    linhas2 = ""
-    for r in det.itertuples():
-        vp = float(r.valor_planejado or 0); vr = float(r.valor_realizado or 0)
-        raw = vr - vp
-        cor = CINZA_TXT if vr == 0 else (VERMELHO if raw > 0 else VERDE)
-        vr_txt = brl(vr) if vr else "—"
-        var_txt = ("—" if vr == 0 else brl(raw))
-        linhas2 += (f"<tr><td style='text-align:left'>{int(r.cr_cod)} · {r.cr_nome}</td>"
-                    f"<td style='text-align:left'>{int(r.conta_cod)} · {r.conta_desc}</td>"
-                    f"<td style='text-align:center'>{r.unidade}</td>"
-                    f"<td>{brl(vp)}</td><td>{vr_txt}</td><td style='color:{cor}'>{var_txt}</td></tr>")
-    tvcor = CINZA_TXT if tr == 0 else (VERMELHO if tv > 0 else VERDE)
-    total = (f"<tr class='mark'><td style='text-align:left' colspan='3'><b>Total ({len(det)} linha(s))</b></td>"
-             f"<td><b>{brl(to)}</b></td><td><b>{brl(tr) if tr else '—'}</b></td>"
-             f"<td style='color:{tvcor}'><b>{brl(tv) if tr else '—'}</b></td></tr>")
-    st.caption(f"{MESES[md]}/2026 · {len(det)} conta(s)/empresa(s) — respeita os filtros de unidade, CR e conta acima.")
-    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
-        <th style='text-align:left'>Centro de resultado</th><th style='text-align:left'>Conta</th>
-        <th style='text-align:center'>Empresa</th><th>Orçado</th><th>Realizado</th><th>Var. (R$)</th></tr>
-        {linhas2}{total}</table></div>""", unsafe_allow_html=True)
+            vr_txt = brl(vr); var_txt = brl(raw); pctv = pct_txt(pct); status = chip(lab, cor)
+        key = f"evo_open_{m}"
+        if key not in st.session_state: st.session_state[key] = False
+        exp = st.session_state[key]
+        cbtn, cbody = st.columns([0.05, 0.95])
+        with cbtn:
+            if st.button("\u25bc" if exp else "\u25b6", key=f"btn_{key}"):
+                st.session_state[key] = not exp; st.rerun()
+        with cbody:
+            bg = " style=\'background:#FFF7E6\'" if m == mes_sel else ""
+            st.markdown(f"""<div class="drow"{bg}><div class="nm">{MESES[m]}</div>
+                <div class="r">{brl(vp)}</div><div class="r">{vr_txt}</div>
+                <div class="r" style="color:{cor};font-weight:600">{var_txt}</div>
+                <div class="r" style="color:{cor}">{pctv}</div>
+                <div class="r">{status}</div></div>""", unsafe_allow_html=True)
+            if exp:
+                yvp = float(cum.loc[m, "valor_planejado"]); yvr = float(cum.loc[m, "valor_realizado"])
+                yraw, ypct = var_de(yvp, yvr)
+                ycor = CINZA_TXT if yvr == 0 else (VERMELHO if yraw > 0 else VERDE)
+                st.markdown(f"<div style='margin:2px 0 6px 8px;font-size:.85rem;color:{CINZA_TXT}'>"
+                            f"Acumulado YTD (Jan\u2013{MESES[m]}): Orçado <b>{brl(yvp)}</b> · "
+                            f"Realizado <b>{brl(yvr) if yvr else '\u2014'}</b> · "
+                            f"Var. <b style='color:{ycor}'>{brl(yraw) if yvr else '\u2014'}</b> "
+                            f"({pct_txt(ypct) if yvr else '\u2014'})</div>", unsafe_allow_html=True)
+                det = df[df["mes"] == m].copy()
+                if det.empty:
+                    st.caption("Sem contas para os filtros selecionados neste mês.")
+                else:
+                    det = det.sort_values(["cr_nome", "conta_cod", "uni_cod"])
+                    to = float(det["valor_planejado"].sum()); tr = float(det["valor_realizado"].sum()); tv = tr - to
+                    linhas = ""
+                    for r in det.itertuples():
+                        p = float(r.valor_planejado or 0); q = float(r.valor_realizado or 0); rw = q - p
+                        co = CINZA_TXT if q == 0 else (VERMELHO if rw > 0 else VERDE)
+                        linhas += (f"<tr><td style='text-align:left'>{int(r.cr_cod)} · {r.cr_nome}</td>"
+                                   f"<td style='text-align:left'>{int(r.conta_cod)} · {r.conta_desc}</td>"
+                                   f"<td style='text-align:center'>{r.unidade}</td>"
+                                   f"<td>{brl(p)}</td><td>{brl(q) if q else '\u2014'}</td>"
+                                   f"<td style='color:{co}'>{brl(rw) if q else '\u2014'}</td></tr>")
+                    tvcor = CINZA_TXT if tr == 0 else (VERMELHO if tv > 0 else VERDE)
+                    total = (f"<tr class='mark'><td style='text-align:left' colspan='3'><b>Total ({len(det)} linha(s))</b></td>"
+                             f"<td><b>{brl(to)}</b></td><td><b>{brl(tr) if tr else '\u2014'}</b></td>"
+                             f"<td style='color:{tvcor}'><b>{brl(tv) if tr else '\u2014'}</b></td></tr>")
+                    st.markdown(f"""<div class='scroll' style='margin:2px 0 12px 8px;'><table class="lle"><tr>
+                        <th style='text-align:left'>Centro de resultado</th><th style='text-align:left'>Conta</th>
+                        <th style='text-align:center'>Empresa</th><th>Orçado</th><th>Realizado</th><th>Var. (R$)</th></tr>
+                        {linhas}{total}</table></div>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- DRILL-DOWN por CR -> conta
 def drill_desvios(d_mes, banda, mes):
