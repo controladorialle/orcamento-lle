@@ -15,7 +15,7 @@ AZUL_PROFUNDO = "#071639"; AZUL_CORP = "#183F78"; AMARELO = "#F8B11E"
 VERDE = "#0F8C3B"; VERMELHO = "#C0392B"; CINZA_TXT = "#6B7583"
 CINZA_BG = "#F5F7FA"; LINHA = "#E4E8F0"
 
-st.set_page_config(page_title="LLE Orçamento", page_icon="📊", layout="wide",
+st.set_page_config(page_title="Sistema de Acompanhamento Orçamentário", page_icon="📊", layout="wide",
                    initial_sidebar_state="collapsed")
 URL = st.secrets.get("SUPABASE_URL", ""); ANON = st.secrets.get("SUPABASE_ANON_KEY", "")
 MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
@@ -290,6 +290,20 @@ def _q_hc_log(tok, rtok, limite):
     except Exception: return []
 def carregar_hc_log(limite=200): return _q_hc_log(*_tok(), limite)
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_receita(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("receita_venda").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
+def carregar_receita(ano=2026): return _q_receita(*_tok(), ano)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_receita_log(tok, rtok, limite):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("receita_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+    except Exception: return []
+def carregar_receita_log(limite=200): return _q_receita_log(*_tok(), limite)
+
 def limpar_cache():
     """Limpeza total — usar em importações (mudam orçado e operacional)."""
     try: st.cache_data.clear()
@@ -334,7 +348,7 @@ def tela_login():
     _, c2, _ = st.columns([1, 1.3, 1])
     with c2:
         st.markdown(f"""<div style="text-align:center; padding:26px 0 6px;"><div>{LOGO}</div>
-            <h1 style="color:{AZUL_PROFUNDO}; margin:12px 0 2px;">Sistema de Acompanhamento de Orçamento</h1>
+            <h1 style="color:{AZUL_PROFUNDO}; margin:12px 0 2px;">Sistema de Acompanhamento Orçamentário</h1>
             <p style="color:{AZUL_CORP}; font-size:13px; margin:0;">LLE Ferragens · Controladoria</p></div>""", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("##### Acesso ao sistema")
@@ -357,20 +371,20 @@ def header(prof):
     papel = "Controladoria" if prof["papel"] == "controladoria" else "Gestor"
     st.markdown(f"""<div class="lle-header">
         <div class="lle-hl">{LOGO}<div>
-          <h1>Sistema de Acompanhamento de Orçamento — LLE Ferragens</h1>
+          <h1>Sistema de Acompanhamento Orçamentário — LLE Ferragens</h1>
           <p>{prof['nome']}</p></div></div>
         <div class="lle-badge">GRUPO LLE <span>—</span> {papel}</div></div>""", unsafe_allow_html=True)
 
 def rodape():
     st.markdown(f"""<div class="lle-foot">
         <div style="display:flex; align-items:center; gap:12px;">{LOGO}
-          <div><div class="t">Sistema de Acompanhamento de Orçamento</div>
-          <div class="s">Controladoria · Grupo LLE Ferragens · 2026</div></div></div>
+          <div><div class="t">Sistema de Acompanhamento Orçamentário</div>
+          <div class="s">Controladoria · Grupo LLE Ferragens</div></div></div>
         <div class="v"><div>Módulo Despesas · Orçado x Realizado</div>
           <div style="opacity:.7; margin-top:3px;">Todos os direitos reservados</div></div></div>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- blocos de insight
-def resumo_colunas(d_mes, d_ytd, banda, mes):
+def resumo_colunas(d_mes, d_ytd, banda, mes, ano):
     vp, vr = d_mes["valor_planejado"].sum(), d_mes["valor_realizado"].sum()
     raw, pct = var_de(vp, vr); lab, cor = classifica(raw, pct, "5", banda)
     yp, yr = d_ytd["valor_planejado"].sum(), d_ytd["valor_realizado"].sum()
@@ -387,8 +401,8 @@ def resumo_colunas(d_mes, d_ytd, banda, mes):
         </div>"""
 
     st.markdown("<div class='resumo'>"
-        + panel("MÊS", MESES[mes] + "/2026", vp, vr, raw, pct, lab, cor)
-        + panel("ACUMULADO YTD", f"Jan–{MABREV[mes]}/2026", yp, yr, yraw, ypct, ylab, ycor)
+        + panel("MÊS", MESES[mes] + f"/{ano}", vp, vr, raw, pct, lab, cor)
+        + panel("ACUMULADO YTD", f"Jan–{MABREV[mes]}/{ano}", yp, yr, yraw, ypct, ylab, ycor)
         + "</div>", unsafe_allow_html=True)
 
 def contadores(df_mes, banda):
@@ -524,11 +538,11 @@ def drill_desvios(d_mes, banda, mes):
                     </tr>{linhas}</table></div>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- justificativas
-def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
+def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
     if mes < get_cobranca(c):
-        st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
+        st.info(f"{MESES[mes]}/{ano} não está sujeito à cobrança de justificativa.")
         return
-    js = carregar_justificativas(2026, mes)
+    js = carregar_justificativas(ano, mes)
     jmap = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])): j for j in js}
     itens = []
     for _, v in df_mes.iterrows():
@@ -559,7 +573,7 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
     alvo = escolha.split(" (")[0]
     vis = itens if alvo == "Todas" else [it for it in itens if _st(it) in GRUPOS[alvo]]
     if not vis:
-        st.caption(f"Exibindo 0 de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/2026")
+        st.caption(f"Exibindo 0 de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/{ano}")
         st.info("Nenhuma conta nesta situação.")
         return
 
@@ -575,14 +589,14 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
         st.caption(f"Exibindo {ini + 1}–{ini + len(page_vis)} de {total} · página {pagina} de {npag} — dica: filtre por Gestor ou Centro de resultado acima para reduzir a lista.")
     else:
         page_vis = vis
-        st.caption(f"Exibindo {total} de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/2026")
+        st.caption(f"Exibindo {total} de {len(itens)} desvio(s) desfavorável(is) em {MESES[mes]}/{ano}")
 
     # histórico só das contas desta página (evita carregar as ~50 mil notas do mês inteiro)
     contas_pg = sorted({int(v["conta_cod"]) for v, _, _, _ in page_vis})
     crs_pg = sorted({int(v["cr_cod"]) for v, _, _, _ in page_vis})
     try:
         _op = (c.table("operacional_detalhe").select("uni_cod,cr_cod,conta_cod,num_doc,valor,historico")
-               .eq("ano", 2026).eq("mes", mes).in_("cr_cod", crs_pg).in_("conta_cod", contas_pg).execute().data or [])
+               .eq("ano", ano).eq("mes", mes).in_("cr_cod", crs_pg).in_("conta_cod", contas_pg).execute().data or [])
     except Exception:
         _op = []
     oper_all = pd.DataFrame(_op)
@@ -604,7 +618,7 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda):
                 st.dataframe(dfd, use_container_width=True, hide_index=True)
             else:
                 st.caption("Sem detalhe operacional para esta conta neste mês.")
-            key = dict(ano=2026, mes=mes, uni_cod=int(v["uni_cod"]), cr_cod=int(v["cr_cod"]), conta_cod=int(v["conta_cod"]))
+            key = dict(ano=ano, mes=mes, uni_cod=int(v["uni_cod"]), cr_cod=int(v["cr_cod"]), conta_cod=int(v["conta_cod"]))
             kb = f"{mes}_{v['uni_cod']}_{v['cr_cod']}_{v['conta_cod']}"
             if status == "DEVOLVIDO" and j.get("comentario_controladoria"):
                 st.warning(f"Controladoria: {j['comentario_controladoria']}")
@@ -644,12 +658,12 @@ def modelo_hc_treasy_xlsx():
         df.to_excel(x, index=False, sheet_name="Planilha2")
     return buf.getvalue()
 
-def tela_headcount(c, prof):
+def tela_headcount(c, prof, ano, mes):
     st.markdown("<div class='modtag'>Gestão de Gastos com Pessoal</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Quadro de pessoal e gastos com pessoal — orçado x realizado (Unidade × CR × Cargo)</div>", unsafe_allow_html=True)
 
-    q = pd.DataFrame(carregar_hc_quadro(2026))
-    k = pd.DataFrame(carregar_hc_custo(2026))
+    q = pd.DataFrame(carregar_hc_quadro(ano))
+    k = pd.DataFrame(carregar_hc_custo(ano))
     if q.empty and k.empty:
         st.info("Nenhum dado de pessoal ainda. Vá à aba **Importar dados**, seção *Gestão de Gastos com Pessoal*, baixe o modelo e importe a planilha (padrão Treasy).")
         return
@@ -671,11 +685,10 @@ def tela_headcount(c, prof):
         cc = str(r.get("cargo_cod", "") or "")
         if cc: cargo_map[cc] = str(r.get("cargo_nome", "") or cc)
 
-    fc = st.columns([1.1, 1.1, 1.6, 1.6])
-    mes = fc[0].selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="hc_mes")
-    uni_sel = fc[1].selectbox("Unidade", [0] + sorted(uni_map), format_func=lambda x: "Todas" if x == 0 else uni_map[x], key="hc_uni")
-    cr_sel = fc[2].selectbox("Centro de resultado", [0] + sorted(cr_map), format_func=lambda x: "Todos" if x == 0 else f"{x} · {cr_map[x]}", key="hc_cr")
-    cargo_sel = fc[3].selectbox("Cargo", [""] + sorted(cargo_map), format_func=lambda x: "Todos" if x == "" else f"{x} · {cargo_map[x]}", key="hc_cargo")
+    fc = st.columns([1.4, 1.9, 1.6])
+    uni_sel = fc[0].selectbox("Unidade", [0] + sorted(uni_map), format_func=lambda x: "Todas" if x == 0 else uni_map[x], key="hc_uni")
+    cr_sel = fc[1].selectbox("Centro de resultado", [0] + sorted(cr_map), format_func=lambda x: "Todos" if x == 0 else f"{x} · {cr_map[x]}", key="hc_cr")
+    cargo_sel = fc[2].selectbox("Cargo", [""] + sorted(cargo_map), format_func=lambda x: "Todos" if x == "" else f"{x} · {cargo_map[x]}", key="hc_cargo")
 
     def filtra(df, com_mes=True):
         if df.empty: return df
@@ -871,7 +884,7 @@ def tela_headcount(c, prof):
             <th style='text-align:left'>Cargo</th><th style='text-align:center'>Campo</th>
             <th style='text-align:left'>Categoria</th><th>De</th><th>Para</th></tr>{linhas}</table>""", unsafe_allow_html=True)
 
-def tela_importar(c):
+def tela_importar(c, ano):
     st.markdown("<div class='modtag'>Configuração e importação de dados</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Regras de classificação, cobrança e carga das bases mensais</div>", unsafe_allow_html=True)
     st.subheader("Configuração")
@@ -882,14 +895,14 @@ def tela_importar(c):
         set_faixa(c, nova); st.success(f"Faixa neutra atualizada para ±{nova:.1f}%.".replace(".", ","))
     st.markdown("**Cobrança de justificativas**")
     mc = get_cobranca(c)
-    novo_mc = st.selectbox("Cobrar justificativas a partir do mês (2026)", list(range(1, 13)), index=mc - 1, format_func=lambda m: MESES[m])
+    novo_mc = st.selectbox("Cobrar justificativas a partir do mês (vale para todos os anos)", list(range(1, 13)), index=mc - 1, format_func=lambda m: MESES[m])
     st.caption("Meses anteriores a este não geram pendência nem cobrança (continuam visíveis nas análises).")
     if st.button("Salvar início da cobrança"):
-        set_cobranca(c, novo_mc); st.success(f"Cobrança a partir de {MESES[novo_mc]}/2026.")
+        set_cobranca(c, novo_mc); st.success(f"Cobrança a partir de {MESES[novo_mc]}.")
     st.divider()
     st.subheader("Importar dados")
     st.caption("A base orçado x realizado atualiza os números; o arquivo operacional traz o histórico das notas.")
-    ano = st.number_input("Ano", value=2026, step=1)
+    ano = st.number_input("Ano", value=int(ano), step=1)
     def pick(row, cands):
         for cand in cands:
             for k in row.index:
@@ -1041,21 +1054,20 @@ def relatorio_justificativas_xlsx(js_rows, df_orc, cg):
         df.to_excel(xw, index=False, sheet_name="Justificativas")
     return buf.getvalue(), len(df)
 
-def tela_painel(c, prof, banda, df_orc, cg):
+def tela_painel(c, prof, banda, df_orc, cg, ano, mes):
     st.markdown("<div class='modtag'>Justificativas recebidas</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Pendências por gestor, resumo e detalhe das respostas</div>", unsafe_allow_html=True)
-    mes = st.selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="painel_mes")
 
     # ----- Exportar relatório (.xlsx) -----
     with st.expander("📄 Exportar relatório de justificativas (.xlsx)"):
-        escopo = st.radio("Período", [f"Mês selecionado ({MESES[mes]}/2026)", "Ano inteiro (2026)"],
+        escopo = st.radio("Período", [f"Mês selecionado ({MESES[mes]}/{ano})", f"Ano inteiro ({ano})"],
                           horizontal=True, key="rel_escopo")
         if st.button("Gerar relatório", key="rel_gen"):
             ano_todo = escopo.startswith("Ano")
-            js_rel = carregar_justificativas_ano(2026) if ano_todo else carregar_justificativas(2026, mes)
+            js_rel = carregar_justificativas_ano(ano) if ano_todo else carregar_justificativas(ano, mes)
             dados, nlin = relatorio_justificativas_xlsx(js_rel, df_orc, cg)
             st.session_state["rel_bytes"] = dados
-            st.session_state["rel_nome"] = "justificativas_2026.xlsx" if ano_todo else f"justificativas_{mes:02d}_2026.xlsx"
+            st.session_state["rel_nome"] = f"justificativas_{ano}.xlsx" if ano_todo else f"justificativas_{mes:02d}_{ano}.xlsx"
             st.session_state["rel_n"] = nlin
         if st.session_state.get("rel_bytes") is not None:
             if st.session_state.get("rel_n", 0) == 0:
@@ -1066,10 +1078,10 @@ def tela_painel(c, prof, banda, df_orc, cg):
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rel_dl")
 
     if mes < get_cobranca(c):
-        st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
+        st.info(f"{MESES[mes]}/{ano} não está sujeito à cobrança de justificativa.")
         return
 
-    js = carregar_justificativas(2026, mes)
+    js = carregar_justificativas(ano, mes)
 
     # ----- Pendências por empresa (mesma régua do gestor: por unidade + CR + conta) -----
     dfo = df_orc[df_orc["mes"] == mes] if not df_orc.empty else df_orc
@@ -1112,7 +1124,7 @@ def tela_painel(c, prof, banda, df_orc, cg):
     st.divider()
 
     if not js:
-        st.info(f"Ainda não há justificativas enviadas em {MESES[mes]}/2026. As pendências acima mostram o que falta.")
+        st.info(f"Ainda não há justificativas enviadas em {MESES[mes]}/{ano}. As pendências acima mostram o que falta.")
         return
 
     desc_map = dict(zip(df_orc["conta_cod"].astype(int), df_orc["conta_desc"])) if not df_orc.empty else {}
@@ -1162,21 +1174,20 @@ def tela_painel(c, prof, banda, df_orc, cg):
                     <th style='text-align:left'>Justificativa</th></tr>{linhas2}</table>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- edição manual do orçado
-def tela_editar_orcado(c, prof, df_orc):
+def tela_editar_orcado(c, prof, df_orc, ano, mes):
     st.markdown("<div class='modtag'>Manutenção do Orçamento</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Edite orçado e/ou realizado linha a linha — ideal para reclassificações no período, sem reimportar o arquivo. Toda alteração fica registrada no log.</div>", unsafe_allow_html=True)
     if df_orc is None or df_orc.empty:
         st.info("Base de orçado ainda não carregada. Importe na aba **Importar dados**.")
         return
 
-    fc = st.columns([1.1, 1.3, 1.9])
-    mes = fc[0].selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="edo_mes")
+    fc = st.columns([1.4, 1.9])
     unis = sorted({(int(r["uni_cod"]), r.get("unidade", "")) for _, r in df_orc.iterrows()})
-    uni_sel = fc[1].selectbox("Unidade", [0] + [u[0] for u in unis],
+    uni_sel = fc[0].selectbox("Unidade", [0] + [u[0] for u in unis],
                               format_func=lambda x: "Todas" if x == 0 else next((n for u, n in unis if u == x), str(x)), key="edo_uni")
     dcr = df_orc if not uni_sel else df_orc[df_orc["uni_cod"] == uni_sel]
     crs = sorted({(int(r["cr_cod"]), r.get("cr_nome", "")) for _, r in dcr.iterrows()})
-    cr_sel = fc[2].selectbox("Centro de resultado", [0] + [x[0] for x in crs],
+    cr_sel = fc[1].selectbox("Centro de resultado", [0] + [x[0] for x in crs],
                              format_func=lambda x: "Todos" if x == 0 else f"{x} · {next((n for cc, n in crs if cc == x), '')}", key="edo_cr")
 
     view = df_orc[df_orc["mes"] == mes]
@@ -1196,7 +1207,7 @@ def tela_editar_orcado(c, prof, df_orc):
             "Orçado": orig_o,
             "Realizado": orig_r,
         })
-        st.caption(f"{len(disp)} conta(s) em {MESES[mes]}/2026. Edite **Orçado** e/ou **Realizado** e clique em salvar.")
+        st.caption(f"{len(disp)} conta(s) em {MESES[mes]}/{ano}. Edite **Orçado** e/ou **Realizado** e clique em salvar.")
         edited = st.data_editor(
             disp, key=f"edo_grid_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
             num_rows="fixed", disabled=["Unidade", "Centro de resultado", "Conta"],
@@ -1251,8 +1262,130 @@ def tela_editar_orcado(c, prof, df_orc):
         <th style='text-align:left'>Unidade</th><th style='text-align:left'>Centro de resultado</th>
         <th style='text-align:left'>Conta</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{linhas}</table>""", unsafe_allow_html=True)
 
+# ---------------------------------------------------------------- receita bruta de vendas
+def tela_receita(c, prof, ano):
+    EMP = {1: "PISA", 2: "KING"}
+    banda = get_faixa(c)
+    st.markdown("<div class='modtag'>Receita Bruta de Vendas</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Planejado x realizado por empresa e mês. Convenção de receita: realizado acima do planejado é favorável.</div>", unsafe_allow_html=True)
+
+    rows = carregar_receita(ano)
+    dfr = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ano", "mes", "uni_cod", "unidade", "valor_planejado", "valor_realizado"])
+    for col in ("valor_planejado", "valor_realizado"):
+        if col not in dfr.columns: dfr[col] = 0.0
+
+    emp = st.selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="rec_emp")
+    scope = dfr if not emp else dfr[dfr["uni_cod"] == emp]
+
+    if scope.empty:
+        g = pd.DataFrame(0.0, index=range(1, 13), columns=["valor_planejado", "valor_realizado"])
+    else:
+        g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
+    tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
+    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+
+    def cor_receita(v, pl):
+        p = (v / pl * 100) if pl else 0.0
+        if pl and abs(p) <= banda: return CINZA_TXT
+        return VERDE if v >= 0 else VERMELHO
+
+    # KPIs
+    k = st.columns(4)
+    kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
+           ("Variação (R$)", brl(var), cor_receita(var, tp)), ("Variação (%)", pct_txt(pct), cor_receita(var, tp))]
+    for col, (t, v, cr) in zip(k, kpi):
+        col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
+                     f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
+
+    # evolução mensal
+    st.markdown("#### Evolução mensal")
+    linhas = ""
+    for m in range(1, 13):
+        vp = float(g.loc[m, "valor_planejado"]); vr = float(g.loc[m, "valor_realizado"])
+        v = vr - vp; p = (v / vp * 100) if vp else 0.0
+        if vr == 0 and vp == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem dados", CINZA_TXT); cr = CINZA_TXT
+        elif vr == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem realizado", CINZA_TXT); cr = CINZA_TXT
+        else:
+            cr = cor_receita(v, vp)
+            lab = "Neutro" if cr == CINZA_TXT else ("Favorável" if v >= 0 else "Desfavorável")
+            vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
+        linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
+                   f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
+    tcor = cor_receita(var, tp)
+    total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
+             f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
+             f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
+    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
+        <th style='text-align:left'>Mês</th><th>Planejado</th><th>Realizado</th>
+        <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}{total}</table></div>""", unsafe_allow_html=True)
+
+    # ---------- registrar / editar ----------
+    st.divider()
+    st.markdown("#### Registrar / editar receita")
+    st.caption("Preencha Planejado e Realizado por empresa e mês. Toda alteração fica registrada no log.")
+    emps = [1, 2] if not emp else [emp]
+    idx = {(int(r["mes"]), int(r["uni_cod"])): r for _, r in dfr.iterrows()}
+    keys, disp_mes, disp_emp, oplan, oreal = [], [], [], [], []
+    for u in emps:
+        for m in range(1, 13):
+            r = idx.get((m, u))
+            keys.append((m, u))
+            disp_mes.append(MESES[m]); disp_emp.append(EMP[u])
+            oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
+            oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
+    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, "Planejado": oplan, "Realizado": oreal})
+    ed = st.data_editor(dedit, key=f"rec_grid_{emp}", hide_index=True, use_container_width=True,
+                        num_rows="fixed", disabled=["Mês", "Empresa"],
+                        column_config={"Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+    if st.button("Salvar receita", key="rec_save", type="primary"):
+        np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"])
+        mudou = 0
+        for i, (m, u) in enumerate(keys):
+            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
+            except (TypeError, ValueError): continue
+            mud_p = abs(p_novo - oplan[i]) > 0.005
+            mud_r = abs(r_novo - oreal[i]) > 0.005
+            if not (mud_p or mud_r): continue
+            c.table("receita_venda").upsert(dict(ano=ano, mes=m, uni_cod=u, unidade=EMP[u],
+                valor_planejado=p_novo, valor_realizado=r_novo, atualizado_por=prof.get("nome", "")),
+                on_conflict="ano,mes,uni_cod").execute()
+            if mud_p:
+                c.table("receita_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_planejado",
+                    valor_antigo=oplan[i], valor_novo=p_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+            if mud_r:
+                c.table("receita_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_realizado",
+                    valor_antigo=oreal[i], valor_novo=r_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+        if mudou:
+            limpar_cache()
+            st.success(f"{mudou} alteração(ões) de receita salva(s) e registrada(s) no log.")
+            st.rerun()
+        else:
+            st.info("Nenhuma alteração detectada.")
+
+    # ---------- histórico ----------
+    log = carregar_receita_log(300)
+    if log:
+        st.markdown("###### Histórico de alterações de receita")
+        CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
+        ln = ""
+        for glog in log[:300]:
+            quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
+            va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
+            seta = VERDE if vn > va else VERMELHO
+            ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
+                   f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
+                   f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
+                   f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
+                   f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
+        st.markdown(f"""<table class="lle"><tr>
+            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+            <th style='text-align:center'>Empresa</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------------- administração
-def tela_admin(c, prof):
+def tela_admin(c, prof, ano):
     st.markdown("<div class='modtag'>Administração de acessos</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Substituição por desligamento, ativação e transferência de centros</div>", unsafe_allow_html=True)
     st.caption("Substitua o e-mail de um gestor desligado, ative/desative acessos e transfira centros de resultado. "
@@ -1318,7 +1451,7 @@ def tela_admin(c, prof):
             st.rerun()
 
 # ---------------------------------------------------------------- acompanhamento
-def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
+def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes):
     st.markdown("<div class='modtag'>Módulo Acompanhamento de Despesas — Orçado x Realizado</div>", unsafe_allow_html=True)
 
     if df_orc.empty:
@@ -1328,11 +1461,9 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
     if is_ctrl and cg:
         df["_resp"] = df.apply(lambda r: cg.get((int(r["uni_cod"]), int(r["cr_cod"])), ("—", ""))[0], axis=1)
 
-    # ---------- filtros horizontais ----------
-    ncols = 5 if is_ctrl else 4
-    fcols = st.columns([1.1, 1.5, 1.2, 1.7, 1.7] if is_ctrl else [1.1, 1.2, 1.7, 1.7])
+    # ---------- filtros horizontais (o período vem do seletor global Ano/Mês) ----------
+    fcols = st.columns([1.5, 1.2, 1.7, 1.7] if is_ctrl else [1.2, 1.7, 1.7])
     i = 0
-    mes = fcols[i].selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: f"{MESES[m]}/2026", key="acomp_mes"); i += 1
     if is_ctrl:
         resps = ["Todos"] + sorted([r for r in df["_resp"].dropna().unique().tolist() if r])
         f_resp = fcols[i].selectbox("Gestor", resps, key="acomp_gestor"); i += 1
@@ -1353,9 +1484,9 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
 
     # aviso do gestor
     if not is_ctrl and mes < get_cobranca(c):
-        st.info(f"{MESES[mes]}/2026 não está sujeito à cobrança de justificativa.")
+        st.info(f"{MESES[mes]}/{ano} não está sujeito à cobrança de justificativa.")
     elif not is_ctrl:
-        js = carregar_justificativas(2026, mes)
+        js = carregar_justificativas(ano, mes)
         enviadas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") in ("JUSTIFICADO", "EM_REVISAO", "APROVADO")}
         pend = 0
         for _, v in d_mes.iterrows():
@@ -1364,9 +1495,9 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
             if lab == "Desfavorável" and (int(v["uni_cod"]), int(v["cr_cod"]), int(v["conta_cod"])) not in enviadas:
                 pend += 1
         if pend:
-            st.warning(f"Você tem {pend} conta(s) a justificar em {MESES[mes]}/2026 — veja a seção Justificativas ao final.")
+            st.warning(f"Você tem {pend} conta(s) a justificar em {MESES[mes]}/{ano} — veja a seção Justificativas ao final.")
         else:
-            st.success(f"Nenhuma justificativa pendente em {MESES[mes]}/2026.")
+            st.success(f"Nenhuma justificativa pendente em {MESES[mes]}/{ano}.")
 
     # ---------- submenu de seções (uma por vez -> menos rolagem, menos carga) ----------
     secao = st.radio("Seção", ["📌 Resumo", "📈 Evolução mensal", "🔎 Desvios por CR", "📝 Justificativas"],
@@ -1374,7 +1505,7 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
     st.divider()
 
     if secao.endswith("Resumo"):
-        resumo_colunas(d_mes, d_ytd, banda, mes)
+        resumo_colunas(d_mes, d_ytd, banda, mes, ano)
         contadores(d_mes, banda)
         st.caption("Convenção: contas de receita/dedução (código 3 ou 6) têm sinal invertido — a variação mede o IMPACTO no resultado. "
                    "Verde = favorável, vermelho = desfavorável, cinza = dentro da faixa neutra (±"
@@ -1383,11 +1514,11 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl):
         st.markdown("#### Evolução mensal — Jan a Dez (mês e acumulado YTD)")
         tabela_evolucao(df, banda, mes)
     elif "Desvios" in secao:
-        st.markdown(f"#### Desvios por centro de resultado — {MESES[mes]}/2026")
+        st.markdown(f"#### Desvios por centro de resultado — {MESES[mes]}/{ano}")
         drill_desvios(d_mes, banda, mes)
     else:
-        st.markdown(f"#### Justificativas · {MESES[mes]}/2026")
-        secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda)
+        st.markdown(f"#### Justificativas · {MESES[mes]}/{ano}")
+        secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda, ano)
 
 # ---------------------------------------------------------------- main
 def render_app(c, prof):
@@ -1408,8 +1539,14 @@ def render_app(c, prof):
         for k in ("access_token", "refresh_token", "email"): st.session_state.pop(k, None)
         st.rerun()
 
+    # ----- seletor global de período (Ano + Mês) — vale para todas as telas -----
+    ANOS = list(range(2024, 2032))
+    pc = st.columns([1.1, 1.4, 6])
+    ano = int(pc[0].selectbox("Ano", ANOS, index=(ANOS.index(2026) if 2026 in ANOS else 0), key="g_ano"))
+    mes = int(pc[1].selectbox("Mês", list(range(1, 13)), index=5, format_func=lambda m: MESES[m], key="g_mes"))
+
     # dados compartilhados (cacheados por token — releituras idênticas ficam instantâneas)
-    orc = carregar_orc(2026)
+    orc = carregar_orc(ano)
     df_orc = pd.DataFrame(orc) if orc else pd.DataFrame()
     cg = {}
     try:
@@ -1419,18 +1556,20 @@ def render_app(c, prof):
         cg = {}
 
     if is_ctrl:
-        NAV = ["📊 Acompanhamento", "📥 Justificativas recebidas", "👥 Gestão de Gastos com Pessoal",
-               "✏️ Manutenção Orçamento", "🔑 Administração de acessos", "⬆️ Importar dados"]
+        NAV = ["📊 Acompanhamento", "📥 Justificativas recebidas", "💰 Receita de Vendas",
+               "👥 Gestão de Gastos com Pessoal", "✏️ Manutenção Orçamento",
+               "🔑 Administração de acessos", "⬆️ Importar dados"]
         aba = st.radio("Navegação", NAV, horizontal=True, key="nav_ctrl", label_visibility="collapsed")
         st.markdown("<hr style='margin:.2rem 0 1rem; border:none; border-top:1px solid #E4E8F0'>", unsafe_allow_html=True)
-        if aba == NAV[0]:   tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
-        elif aba == NAV[1]: tela_painel(c, prof, banda, df_orc, cg)
-        elif aba == NAV[2]: tela_headcount(c, prof)
-        elif aba == NAV[3]: tela_editar_orcado(c, prof, df_orc)
-        elif aba == NAV[4]: tela_admin(c, prof)
-        elif aba == NAV[5]: tela_importar(c)
+        if aba == NAV[0]:   tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
+        elif aba == NAV[1]: tela_painel(c, prof, banda, df_orc, cg, ano, mes)
+        elif aba == NAV[2]: tela_receita(c, prof, ano)
+        elif aba == NAV[3]: tela_headcount(c, prof, ano, mes)
+        elif aba == NAV[4]: tela_editar_orcado(c, prof, df_orc, ano, mes)
+        elif aba == NAV[5]: tela_admin(c, prof, ano)
+        elif aba == NAV[6]: tela_importar(c, ano)
     else:
-        tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl)
+        tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
 
     rodape()
 
