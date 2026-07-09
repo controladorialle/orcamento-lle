@@ -18,6 +18,11 @@ CINZA_BG = "#F5F7FA"; LINHA = "#E4E8F0"
 st.set_page_config(page_title="Sistema de Acompanhamento Orçamentário", page_icon="📊", layout="wide",
                    initial_sidebar_state="collapsed")
 URL = st.secrets.get("SUPABASE_URL", ""); ANON = st.secrets.get("SUPABASE_ANON_KEY", "")
+
+# Fragmento: isola reruns da área editada (não recarrega o app inteiro a cada célula).
+# Usa st.fragment quando disponível; senão, cai para identidade (comportamento antigo).
+fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None) or (lambda f: f)
+
 MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 MABREV = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 STATUS_LABEL = {"PENDENTE": "Pendente", "JUSTIFICADO": "Justificado", "EM_REVISAO": "Em revisão", "DEVOLVIDO": "Devolvido", "APROVADO": "Aprovado"}
@@ -672,6 +677,76 @@ def modelo_hc_treasy_xlsx():
         df.to_excel(x, index=False, sheet_name="Planilha2")
     return buf.getvalue()
 
+# ---------------------------------------------------------------- edição de pessoal (fragmento isolado)
+@fragment
+def _edicao_pessoal_frag(qf, kf, mes, uni_sel, cr_sel, c, prof):
+    st.caption("Ajuste headcount e custos por cargo. A edição roda isolada — o app não recarrega a cada célula. Toda alteração fica no log.")
+    keys_q, disp_q, oqo, oqr = [], [], [], []
+    if not qf.empty:
+        qe = qf.sort_values("cargo_cod").reset_index(drop=True)
+        for r in qe.itertuples():
+            keys_q.append((int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), str(r.cargo_cod)))
+            oqo.append(round(float(getattr(r, "qtd_orcada", 0) or 0), 2))
+            oqr.append(round(float(getattr(r, "qtd_realizada", 0) or 0), 2))
+            disp_q.append(f"{r.cargo_cod} · {r.cargo_nome}")
+        dq = pd.DataFrame({"Cargo": disp_q, "HC orçado": oqo, "HC realizado": oqr})
+        st.markdown("**Quadro (quantidade de pessoas)**")
+        edq = st.data_editor(dq, key=f"hce_q_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
+                             num_rows="fixed", disabled=["Cargo"],
+                             column_config={"HC orçado": st.column_config.NumberColumn(format="%.0f", step=1),
+                                            "HC realizado": st.column_config.NumberColumn(format="%.0f", step=1)})
+    else:
+        edq = None
+    keys_k, disp_cargo, disp_cat, oko, okr = [], [], [], [], []
+    if not kf.empty:
+        ke = kf.sort_values(["cargo_cod", "categoria"]).reset_index(drop=True)
+        for r in ke.itertuples():
+            keys_k.append((int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), str(r.cargo_cod), str(r.categoria)))
+            oko.append(round(float(getattr(r, "valor_orcado", 0) or 0), 2))
+            okr.append(round(float(getattr(r, "valor_realizado", 0) or 0), 2))
+            disp_cargo.append(f"{r.cargo_cod} · {r.cargo_nome}")
+            disp_cat.append(CAT_LABEL.get(str(r.categoria), str(r.categoria)))
+        dk = pd.DataFrame({"Cargo": disp_cargo, "Categoria": disp_cat, "Orçado": oko, "Realizado": okr})
+        st.markdown("**Custo por categoria**")
+        edk = st.data_editor(dk, key=f"hce_k_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
+                             num_rows="fixed", disabled=["Cargo", "Categoria"],
+                             column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                                            "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+    else:
+        edk = None
+    if st.button("Salvar alterações de pessoal", key="hce_save", type="primary"):
+        mudou = 0
+        if edq is not None:
+            no, nr = list(edq["HC orçado"]), list(edq["HC realizado"])
+            for i, kk in enumerate(keys_q):
+                an, me, uni, cr, cgo = kk
+                match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo)
+                for coluna, novos, orig in (("qtd_orcada", no, oqo), ("qtd_realizada", nr, oqr)):
+                    try: nv = round(float(novos[i]), 2)
+                    except (TypeError, ValueError): continue
+                    if abs(nv - orig[i]) > 0.005:
+                        c.table("hc_quadro").update({coluna: nv}).match(match).execute()
+                        c.table("hc_log").insert(dict(**match, categoria=None, campo=coluna,
+                            valor_antigo=orig[i], valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
+                        mudou += 1
+        if edk is not None:
+            no, nr = list(edk["Orçado"]), list(edk["Realizado"])
+            for i, kk in enumerate(keys_k):
+                an, me, uni, cr, cgo, cat = kk
+                match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat)
+                for coluna, novos, orig in (("valor_orcado", no, oko), ("valor_realizado", nr, okr)):
+                    try: nv = round(float(novos[i]), 2)
+                    except (TypeError, ValueError): continue
+                    if abs(nv - orig[i]) > 0.005:
+                        c.table("hc_custo").update({coluna: nv}).match(match).execute()
+                        c.table("hc_log").insert(dict(**match, campo=coluna,
+                            valor_antigo=orig[i], valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
+                        mudou += 1
+        if mudou:
+            limpar_cache(); st.success(f"{mudou} alteração(ões) de pessoal salva(s) e registrada(s) no log."); st.rerun()
+        else:
+            st.info("Nenhuma alteração detectada.")
+
 def tela_headcount(c, prof, ano, mes):
     st.markdown("<div class='modtag'>Gestão de Gastos com Pessoal</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Quadro de pessoal e gastos com pessoal — orçado x realizado (Unidade × CR × Cargo)</div>", unsafe_allow_html=True)
@@ -800,77 +875,7 @@ def tela_headcount(c, prof, ano, mes):
     elif qf.empty and kf.empty:
         st.caption("Nada para editar neste recorte.")
     else:
-        st.caption("Ajuste headcount e custos por cargo. Toda alteração fica registrada no log.")
-        # --- grade de headcount (quantidade) ---
-        keys_q, disp_q, oqo, oqr = [], [], [], []
-        if not qf.empty:
-            qe = qf.sort_values("cargo_cod").reset_index(drop=True)
-            for r in qe.itertuples():
-                keys_q.append((int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), str(r.cargo_cod)))
-                oqo.append(round(float(getattr(r, "qtd_orcada", 0) or 0), 2))
-                oqr.append(round(float(getattr(r, "qtd_realizada", 0) or 0), 2))
-                disp_q.append(f"{r.cargo_cod} · {r.cargo_nome}")
-            dq = pd.DataFrame({"Cargo": disp_q, "HC orçado": oqo, "HC realizado": oqr})
-            st.markdown("**Quadro (quantidade de pessoas)**")
-            edq = st.data_editor(dq, key=f"hce_q_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
-                                 num_rows="fixed", disabled=["Cargo"],
-                                 column_config={"HC orçado": st.column_config.NumberColumn(format="%.0f", step=1),
-                                                "HC realizado": st.column_config.NumberColumn(format="%.0f", step=1)})
-        else:
-            edq = None
-        # --- grade de custo (por categoria) ---
-        keys_k, disp_cargo, disp_cat, oko, okr = [], [], [], [], []
-        if not kf.empty:
-            ke = kf.sort_values(["cargo_cod", "categoria"]).reset_index(drop=True)
-            for r in ke.itertuples():
-                keys_k.append((int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), str(r.cargo_cod), str(r.categoria)))
-                oko.append(round(float(getattr(r, "valor_orcado", 0) or 0), 2))
-                okr.append(round(float(getattr(r, "valor_realizado", 0) or 0), 2))
-                disp_cargo.append(f"{r.cargo_cod} · {r.cargo_nome}")
-                disp_cat.append(CAT_LABEL.get(str(r.categoria), str(r.categoria)))
-            dk = pd.DataFrame({"Cargo": disp_cargo, "Categoria": disp_cat, "Orçado": oko, "Realizado": okr})
-            st.markdown("**Custo por categoria**")
-            edk = st.data_editor(dk, key=f"hce_k_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
-                                 num_rows="fixed", disabled=["Cargo", "Categoria"],
-                                 column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                                                "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
-        else:
-            edk = None
-
-        if st.button("Salvar alterações de pessoal", key="hce_save", type="primary"):
-            mudou = 0
-            if edq is not None:
-                no, nr = list(edq["HC orçado"]), list(edq["HC realizado"])
-                for i, kk in enumerate(keys_q):
-                    an, me, uni, cr, cgo = kk
-                    match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo)
-                    for coluna, novos, orig in (("qtd_orcada", no, oqo), ("qtd_realizada", nr, oqr)):
-                        try: nv = round(float(novos[i]), 2)
-                        except (TypeError, ValueError): continue
-                        if abs(nv - orig[i]) > 0.005:
-                            c.table("hc_quadro").update({coluna: nv}).match(match).execute()
-                            c.table("hc_log").insert(dict(**match, categoria=None, campo=coluna,
-                                valor_antigo=orig[i], valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
-                            mudou += 1
-            if edk is not None:
-                no, nr = list(edk["Orçado"]), list(edk["Realizado"])
-                for i, kk in enumerate(keys_k):
-                    an, me, uni, cr, cgo, cat = kk
-                    match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat)
-                    for coluna, novos, orig in (("valor_orcado", no, oko), ("valor_realizado", nr, okr)):
-                        try: nv = round(float(novos[i]), 2)
-                        except (TypeError, ValueError): continue
-                        if abs(nv - orig[i]) > 0.005:
-                            c.table("hc_custo").update({coluna: nv}).match(match).execute()
-                            c.table("hc_log").insert(dict(**match, campo=coluna,
-                                valor_antigo=orig[i], valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
-                            mudou += 1
-            if mudou:
-                limpar_cache()
-                st.success(f"{mudou} alteração(ões) de pessoal salva(s) e registrada(s) no log.")
-                st.rerun()
-            else:
-                st.info("Nenhuma alteração detectada.")
+        _edicao_pessoal_frag(qf, kf, mes, uni_sel, cr_sel, c, prof)
 
     # ---------- histórico de alterações de pessoal ----------
     log = carregar_hc_log(300)
@@ -1188,6 +1193,43 @@ def tela_painel(c, prof, banda, df_orc, cg, ano, mes):
                     <th style='text-align:left'>Justificativa</th></tr>{linhas2}</table>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- edição manual do orçado
+# ---------------------------------------------------------------- edição do orçamento (fragmento isolado)
+@fragment
+def _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, c, prof):
+    view = view.sort_values(["uni_cod", "cr_cod", "conta_cod"]).reset_index(drop=True)
+    keys = [(int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), int(r.conta_cod)) for r in view.itertuples()]
+    orig_o = [round(float(r.valor_planejado or 0), 2) for r in view.itertuples()]
+    orig_r = [round(float(r.valor_realizado or 0), 2) for r in view.itertuples()]
+    disp = pd.DataFrame({
+        "Unidade": [r.unidade for r in view.itertuples()],
+        "Centro de resultado": [r.cr_nome for r in view.itertuples()],
+        "Conta": [f"{int(r.conta_cod)} · {r.conta_desc}" for r in view.itertuples()],
+        "Orçado": orig_o, "Realizado": orig_r,
+    })
+    st.caption(f"{len(disp)} conta(s) em {MESES[mes]}/{ano}. A edição roda isolada — o app não recarrega a cada célula. Edite **Orçado** e/ou **Realizado** e salve.")
+    edited = st.data_editor(
+        disp, key=f"edo_grid_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
+        num_rows="fixed", disabled=["Unidade", "Centro de resultado", "Conta"],
+        column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+    if st.button("Salvar alterações", key="edo_save", type="primary"):
+        novos_o = list(edited["Orçado"]); novos_r = list(edited["Realizado"]); mudou = 0
+        for i, kkey in enumerate(keys):
+            an, me, uni, cr, ct = kkey
+            match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, conta_cod=ct)
+            for coluna, novos, orig in (("valor_planejado", novos_o, orig_o), ("valor_realizado", novos_r, orig_r)):
+                try: nv = round(float(novos[i]), 2)
+                except (TypeError, ValueError): continue
+                if abs(nv - orig[i]) > 0.005:
+                    c.table("orc_realizado").update({coluna: nv}).match(match).execute()
+                    c.table("orc_log").insert(dict(**match, campo=coluna, valor_antigo=orig[i],
+                        valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
+                    mudou += 1
+        if mudou:
+            limpar_cache(); st.success(f"{mudou} alteração(ões) salva(s) e registrada(s) no log."); st.rerun()
+        else:
+            st.info("Nenhuma alteração detectada.")
+
 def tela_editar_orcado(c, prof, df_orc, ano, mes):
     st.markdown("<div class='modtag'>Manutenção do Orçamento</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Edite orçado e/ou realizado linha a linha — ideal para reclassificações no período, sem reimportar o arquivo. Toda alteração fica registrada no log.</div>", unsafe_allow_html=True)
@@ -1210,44 +1252,7 @@ def tela_editar_orcado(c, prof, df_orc, ano, mes):
     if view.empty:
         st.info("Nenhuma conta para os filtros selecionados.")
     else:
-        view = view.sort_values(["uni_cod", "cr_cod", "conta_cod"]).reset_index(drop=True)
-        keys = [(int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), int(r.conta_cod)) for r in view.itertuples()]
-        orig_o = [round(float(r.valor_planejado or 0), 2) for r in view.itertuples()]
-        orig_r = [round(float(r.valor_realizado or 0), 2) for r in view.itertuples()]
-        disp = pd.DataFrame({
-            "Unidade": [r.unidade for r in view.itertuples()],
-            "Centro de resultado": [r.cr_nome for r in view.itertuples()],
-            "Conta": [f"{int(r.conta_cod)} · {r.conta_desc}" for r in view.itertuples()],
-            "Orçado": orig_o,
-            "Realizado": orig_r,
-        })
-        st.caption(f"{len(disp)} conta(s) em {MESES[mes]}/{ano}. Edite **Orçado** e/ou **Realizado** e clique em salvar.")
-        edited = st.data_editor(
-            disp, key=f"edo_grid_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
-            num_rows="fixed", disabled=["Unidade", "Centro de resultado", "Conta"],
-            column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                           "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
-        if st.button("Salvar alterações", key="edo_save", type="primary"):
-            novos_o = list(edited["Orçado"]); novos_r = list(edited["Realizado"])
-            mudou = 0
-            for i, kkey in enumerate(keys):
-                an, me, uni, cr, ct = kkey
-                match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, conta_cod=ct)
-                for coluna, novos, orig in (("valor_planejado", novos_o, orig_o),
-                                            ("valor_realizado", novos_r, orig_r)):
-                    try: nv = round(float(novos[i]), 2)
-                    except (TypeError, ValueError): continue
-                    if abs(nv - orig[i]) > 0.005:
-                        c.table("orc_realizado").update({coluna: nv}).match(match).execute()
-                        c.table("orc_log").insert(dict(**match, campo=coluna, valor_antigo=orig[i],
-                            valor_novo=nv, alterado_por=prof.get("nome", ""))).execute()
-                        mudou += 1
-            if mudou:
-                limpar_cache()
-                st.success(f"{mudou} alteração(ões) salva(s) e registrada(s) no log.")
-                st.rerun()
-            else:
-                st.info("Nenhuma alteração detectada.")
+        _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, c, prof)
 
     # ---------- histórico de alterações ----------
     st.divider()
@@ -1275,6 +1280,66 @@ def tela_editar_orcado(c, prof, df_orc, ano, mes):
         <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
         <th style='text-align:left'>Unidade</th><th style='text-align:left'>Centro de resultado</th>
         <th style='text-align:left'>Conta</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{linhas}</table>""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------- registro mensal (fragmento isolado)
+@fragment
+def _registro_mensal_frag(tabela, tabela_log, log_loader, dfr, emp, ano, c, prof, rotulo, custo=False):
+    """Grade editável Planejado/Realizado por empresa e mês, com log. Roda isolada (fragment)."""
+    EMP = {1: "PISA", 2: "KING"}
+    st.divider()
+    st.markdown(f"#### Registrar / editar {rotulo}")
+    st.caption("Preencha Planejado e Realizado por empresa e mês. A edição roda isolada — o app não recarrega a cada célula. Toda alteração fica no log.")
+    emps = [1, 2] if not emp else [emp]
+    idx = {(int(r["mes"]), int(r["uni_cod"])): r for _, r in dfr.iterrows()}
+    keys, disp_mes, disp_emp, oplan, oreal = [], [], [], [], []
+    for u in emps:
+        for m in range(1, 13):
+            r = idx.get((m, u))
+            keys.append((m, u)); disp_mes.append(MESES[m]); disp_emp.append(EMP[u])
+            oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
+            oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
+    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, "Planejado": oplan, "Realizado": oreal})
+    ed = st.data_editor(dedit, key=f"{tabela}_grid_{emp}", hide_index=True, use_container_width=True,
+                        num_rows="fixed", disabled=["Mês", "Empresa"],
+                        column_config={"Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+    if st.button(f"Salvar {rotulo}", key=f"{tabela}_save", type="primary"):
+        np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"]); mudou = 0
+        for i, (m, u) in enumerate(keys):
+            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
+            except (TypeError, ValueError): continue
+            mud_p = abs(p_novo - oplan[i]) > 0.005; mud_r = abs(r_novo - oreal[i]) > 0.005
+            if not (mud_p or mud_r): continue
+            c.table(tabela).upsert(dict(ano=ano, mes=m, uni_cod=u, unidade=EMP[u],
+                valor_planejado=p_novo, valor_realizado=r_novo, atualizado_por=prof.get("nome", "")),
+                on_conflict="ano,mes,uni_cod").execute()
+            if mud_p:
+                c.table(tabela_log).insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_planejado",
+                    valor_antigo=oplan[i], valor_novo=p_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+            if mud_r:
+                c.table(tabela_log).insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_realizado",
+                    valor_antigo=oreal[i], valor_novo=r_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+        if mudou:
+            limpar_cache(); st.success(f"{mudou} alteração(ões) salva(s) e registrada(s) no log."); st.rerun()
+        else:
+            st.info("Nenhuma alteração detectada.")
+    log = log_loader(300)
+    if log:
+        st.markdown(f"###### Histórico de alterações de {rotulo}")
+        CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
+        ln = ""
+        for glog in log[:300]:
+            quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
+            va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
+            seta = (VERMELHO if vn > va else VERDE) if custo else (VERDE if vn > va else VERMELHO)
+            ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
+                   f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
+                   f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
+                   f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
+                   f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
+        st.markdown(f"""<table class="lle"><tr>
+            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+            <th style='text-align:center'>Empresa</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- receita bruta de vendas
 def tela_receita(c, prof, ano):
@@ -1335,68 +1400,7 @@ def tela_receita(c, prof, ano):
         <th style='text-align:left'>Mês</th><th>Planejado</th><th>Realizado</th>
         <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}{total}</table></div>""", unsafe_allow_html=True)
 
-    # ---------- registrar / editar ----------
-    st.divider()
-    st.markdown("#### Registrar / editar receita")
-    st.caption("Preencha Planejado e Realizado por empresa e mês. Toda alteração fica registrada no log.")
-    emps = [1, 2] if not emp else [emp]
-    idx = {(int(r["mes"]), int(r["uni_cod"])): r for _, r in dfr.iterrows()}
-    keys, disp_mes, disp_emp, oplan, oreal = [], [], [], [], []
-    for u in emps:
-        for m in range(1, 13):
-            r = idx.get((m, u))
-            keys.append((m, u))
-            disp_mes.append(MESES[m]); disp_emp.append(EMP[u])
-            oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
-            oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
-    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, "Planejado": oplan, "Realizado": oreal})
-    ed = st.data_editor(dedit, key=f"rec_grid_{emp}", hide_index=True, use_container_width=True,
-                        num_rows="fixed", disabled=["Mês", "Empresa"],
-                        column_config={"Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
-    if st.button("Salvar receita", key="rec_save", type="primary"):
-        np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"])
-        mudou = 0
-        for i, (m, u) in enumerate(keys):
-            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
-            except (TypeError, ValueError): continue
-            mud_p = abs(p_novo - oplan[i]) > 0.005
-            mud_r = abs(r_novo - oreal[i]) > 0.005
-            if not (mud_p or mud_r): continue
-            c.table("receita_venda").upsert(dict(ano=ano, mes=m, uni_cod=u, unidade=EMP[u],
-                valor_planejado=p_novo, valor_realizado=r_novo, atualizado_por=prof.get("nome", "")),
-                on_conflict="ano,mes,uni_cod").execute()
-            if mud_p:
-                c.table("receita_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_planejado",
-                    valor_antigo=oplan[i], valor_novo=p_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
-            if mud_r:
-                c.table("receita_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_realizado",
-                    valor_antigo=oreal[i], valor_novo=r_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
-        if mudou:
-            limpar_cache()
-            st.success(f"{mudou} alteração(ões) de receita salva(s) e registrada(s) no log.")
-            st.rerun()
-        else:
-            st.info("Nenhuma alteração detectada.")
-
-    # ---------- histórico ----------
-    log = carregar_receita_log(300)
-    if log:
-        st.markdown("###### Histórico de alterações de receita")
-        CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
-        ln = ""
-        for glog in log[:300]:
-            quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
-            va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
-            seta = VERDE if vn > va else VERMELHO
-            ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
-                   f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
-                   f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
-                   f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
-                   f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
-        st.markdown(f"""<table class="lle"><tr>
-            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
-            <th style='text-align:center'>Empresa</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
+    _registro_mensal_frag("receita_venda", "receita_log", carregar_receita_log, dfr, emp, ano, c, prof, "receita")
 
 # ---------------------------------------------------------------- CMV (custo da mercadoria vendida)
 def tela_cmv(c, prof, ano):
@@ -1457,68 +1461,7 @@ def tela_cmv(c, prof, ano):
         <th style='text-align:left'>Mês</th><th>Planejado</th><th>Realizado</th>
         <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}{total}</table></div>""", unsafe_allow_html=True)
 
-    # ---------- registrar / editar ----------
-    st.divider()
-    st.markdown("#### Registrar / editar CMV")
-    st.caption("Preencha Planejado e Realizado por empresa e mês. Toda alteração fica registrada no log.")
-    emps = [1, 2] if not emp else [emp]
-    idx = {(int(r["mes"]), int(r["uni_cod"])): r for _, r in dfr.iterrows()}
-    keys, disp_mes, disp_emp, oplan, oreal = [], [], [], [], []
-    for u in emps:
-        for m in range(1, 13):
-            r = idx.get((m, u))
-            keys.append((m, u))
-            disp_mes.append(MESES[m]); disp_emp.append(EMP[u])
-            oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
-            oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
-    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, "Planejado": oplan, "Realizado": oreal})
-    ed = st.data_editor(dedit, key=f"cmv_grid_{emp}", hide_index=True, use_container_width=True,
-                        num_rows="fixed", disabled=["Mês", "Empresa"],
-                        column_config={"Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
-    if st.button("Salvar CMV", key="cmv_save", type="primary"):
-        np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"])
-        mudou = 0
-        for i, (m, u) in enumerate(keys):
-            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
-            except (TypeError, ValueError): continue
-            mud_p = abs(p_novo - oplan[i]) > 0.005
-            mud_r = abs(r_novo - oreal[i]) > 0.005
-            if not (mud_p or mud_r): continue
-            c.table("cmv_valor").upsert(dict(ano=ano, mes=m, uni_cod=u, unidade=EMP[u],
-                valor_planejado=p_novo, valor_realizado=r_novo, atualizado_por=prof.get("nome", "")),
-                on_conflict="ano,mes,uni_cod").execute()
-            if mud_p:
-                c.table("cmv_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_planejado",
-                    valor_antigo=oplan[i], valor_novo=p_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
-            if mud_r:
-                c.table("cmv_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_realizado",
-                    valor_antigo=oreal[i], valor_novo=r_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
-        if mudou:
-            limpar_cache()
-            st.success(f"{mudou} alteração(ões) de CMV salva(s) e registrada(s) no log.")
-            st.rerun()
-        else:
-            st.info("Nenhuma alteração detectada.")
-
-    # ---------- histórico ----------
-    log = carregar_cmv_log(300)
-    if log:
-        st.markdown("###### Histórico de alterações de CMV")
-        CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
-        ln = ""
-        for glog in log[:300]:
-            quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
-            va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
-            seta = VERMELHO if vn > va else VERDE  # custo maior = vermelho
-            ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
-                   f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
-                   f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
-                   f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
-                   f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
-        st.markdown(f"""<table class="lle"><tr>
-            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
-            <th style='text-align:center'>Empresa</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
+    _registro_mensal_frag("cmv_valor", "cmv_log", carregar_cmv_log, dfr, emp, ano, c, prof, "CMV", custo=True)
 
 # ---------------------------------------------------------------- administração
 def tela_admin(c, prof, ano):
