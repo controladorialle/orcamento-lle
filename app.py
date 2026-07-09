@@ -30,7 +30,11 @@ CATEGORIAS = [("SALARIOS", "Salários e ordenados"), ("ENCARGOS", "Encargos"), (
 CAT_LABEL = dict(CATEGORIAS)
 DEDUCOES = ["Devolução de Vendas", "COFINS", "ICMS", "ICMS - Bonificação", "ICMS - ST",
             "ICMS ST - Bonificação", "ICMS Subvenção", "IPI", "PIS"]
-DRE_DESP_LINHAS = ["Despesas Comerciais", "Despesas Administrativas", "Despesas Financeiras", "Outras Despesas Operacionais"]
+DRE_GRUPOS = [("Receitas Financeiras", "rev"), ("Despesas Comerciais", "cost"),
+              ("Despesas Administrativas", "cost"), ("Despesas Financeiras", "cost"),
+              ("Outras Despesas Operacionais", "cost")]
+FIN_GRUPOS = {"Receitas Financeiras", "Despesas Financeiras"}
+DRE_LINHAS_OPC = [g for g, _ in DRE_GRUPOS]
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Mapeamento das rubricas do template Treasy nas 4 categorias
 HC_MAP = {
@@ -1694,7 +1698,7 @@ def dre_xlsx(linhas, base_r, ano, faixa, empresa):
 @fragment
 def _mapa_dre_frag(contas, mapa, c, prof):
     """Grade para mapear contas do orçamento -> linha da DRE. Roda isolada (fragment)."""
-    OPCOES = ["Fora da DRE"] + DRE_DESP_LINHAS
+    OPCOES = ["Fora da DRE"] + DRE_LINHAS_OPC
     st.caption("Marque quais contas do orçamento são despesa operacional e em qual grupo entram. "
                "Deixe **Fora da DRE** o que já vem dos módulos próprios (receita, deduções, CMV, pessoal) ou não é despesa. A edição roda isolada.")
     dm = pd.DataFrame({
@@ -1765,7 +1769,7 @@ def tela_dre(c, prof, ano):
     mapa = {int(x["conta_cod"]): x.get("linha") for x in carregar_dre_mapa() if x.get("conta_cod") is not None}
     orc_cur = carregar_orc(ano) or []
     orc_prev = carregar_orc(ano - 1) or []
-    grp = {g: {"p": 0.0, "r": 0.0, "a": 0.0} for g in DRE_DESP_LINHAS}
+    grp = {g: {"p": 0.0, "r": 0.0, "a": 0.0} for g, _ in DRE_GRUPOS}
     for x in orc_cur:
         if int(x.get("mes", 0) or 0) in meses and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
             g = mapa.get(int(x.get("conta_cod", 0) or 0))
@@ -1776,8 +1780,13 @@ def tela_dre(c, prof, ano):
             g = mapa.get(int(x.get("conta_cod", 0) or 0))
             if g in grp:
                 grp[g]["a"] += float(x.get("valor_realizado") or 0)
-    desp_tot = {"p": sum(grp[g]["p"] for g in grp), "r": sum(grp[g]["r"] for g in grp), "a": sum(grp[g]["a"] for g in grp)}
-    resop = {"p": lb["p"] - pes["p"] - desp_tot["p"], "r": lb["r"] - pes["r"] - desp_tot["r"], "a": lb["a"] - pes["a"] - desp_tot["a"]}
+    # despesas operacionais = grupos de custo que NÃO são financeiros
+    op_cost = [g for g, t in DRE_GRUPOS if t == "cost" and g not in FIN_GRUPOS]
+    op_sub = {k: sum(grp[g][k] for g in op_cost) for k in ("p", "r", "a")}
+    resop = {k: lb[k] - pes[k] - op_sub[k] for k in ("p", "r", "a")}
+    recfin = grp.get("Receitas Financeiras", {"p": 0.0, "r": 0.0, "a": 0.0})
+    despfin = grp.get("Despesas Financeiras", {"p": 0.0, "r": 0.0, "a": 0.0})
+    res_ai = {k: resop[k] + recfin[k] - despfin[k] for k in ("p", "r", "a")}
     base_r = rl["r"]
 
     heads = ["Linha"]
@@ -1817,10 +1826,17 @@ def tela_dre(c, prof, ano):
                   ("(−) CMV", cmv, "cost", False),
                   ("(=) Lucro Bruto", lb, "rev", True),
                   ("(−) Despesas com Pessoal", pes, "cost", False)]
-    for g in DRE_DESP_LINHAS:
+    for g in op_cost:
         if grp[g]["p"] or grp[g]["r"] or grp[g]["a"]:
             linhas_dre.append((f"(−) {g}", grp[g], "cost", False))
     linhas_dre.append(("(=) Resultado Operacional", resop, "rev", True))
+    tem_fin = any(recfin[k] or despfin[k] for k in ("p", "r", "a"))
+    if tem_fin:
+        if any(recfin[k] for k in ("p", "r", "a")):
+            linhas_dre.append(("(+) Receitas Financeiras", recfin, "rev", False))
+        if any(despfin[k] for k in ("p", "r", "a")):
+            linhas_dre.append(("(−) Despesas Financeiras", despfin, "cost", False))
+        linhas_dre.append(("(=) Resultado antes de Impostos", res_ai, "rev", True))
     corpo = "".join(linha(n, d, t, forte=fo) for n, d, t, fo in linhas_dre)
 
     st.caption(f"Período: {faixa} · Empresa: {'Todas' if not emp else EMP[emp]} · AV = % da Receita Líquida · AH = Realizado vs {ano-1}.")
@@ -1831,8 +1847,8 @@ def tela_dre(c, prof, ano):
                            file_name=f"DRE_{('todas' if not emp else EMP[emp])}_{ano}.xlsx", mime=XLSX_MIME, key="dre_dl")
     except Exception:
         pass
-    if not any(grp[g]["p"] or grp[g]["r"] for g in DRE_DESP_LINHAS):
-        st.info("Nenhuma despesa operacional mapeada ainda. Abra **Mapear contas do orçamento** abaixo para incluir as despesas na DRE.")
+    if not any(grp[g]["p"] or grp[g]["r"] for g, _ in DRE_GRUPOS):
+        st.info("Nenhuma conta do orçamento mapeada ainda. Abra **Mapear contas do orçamento** abaixo para incluir despesas e receitas financeiras na DRE.")
 
     # ----- mapeamento de contas -----
     contas = sorted({(int(x["conta_cod"]), str(x.get("conta_desc", ""))) for x in orc_cur if x.get("conta_cod") is not None})
