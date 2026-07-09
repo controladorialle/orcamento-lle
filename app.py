@@ -30,6 +30,7 @@ CATEGORIAS = [("SALARIOS", "Salários e ordenados"), ("ENCARGOS", "Encargos"), (
 CAT_LABEL = dict(CATEGORIAS)
 DEDUCOES = ["Devolução de Vendas", "COFINS", "ICMS", "ICMS - Bonificação", "ICMS - ST",
             "ICMS ST - Bonificação", "ICMS Subvenção", "IPI", "PIS"]
+DRE_DESP_LINHAS = ["Despesas Comerciais", "Despesas Administrativas", "Despesas Financeiras", "Outras Despesas Operacionais"]
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Mapeamento das rubricas do template Treasy nas 4 categorias
 HC_MAP = {
@@ -349,6 +350,27 @@ def _q_deducao_log(tok, rtok, limite):
     try: return cc.table("deducao_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
     except Exception: return []
 def carregar_deducao_log(limite=200): return _q_deducao_log(*_tok(), limite)
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_dre_mapa(tok, rtok):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("dre_mapa").select("*").execute().data or []
+    except Exception: return []
+def carregar_dre_mapa(): return _q_dre_mapa(*_tok())
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_investimento(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("investimento_valor").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
+def carregar_investimento(ano=2026): return _q_investimento(*_tok(), ano)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_investimento_log(tok, rtok, limite):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("investimento_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+    except Exception: return []
+def carregar_investimento_log(limite=200): return _q_investimento_log(*_tok(), limite)
 
 def limpar_cache():
     """Limpeza total — usar em importações (mudam orçado e operacional)."""
@@ -1641,6 +1663,244 @@ def tela_deducao(c, prof, ano):
             <th style='text-align:center'>Empresa</th><th style='text-align:left'>Dedução</th>
             <th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
 
+# ---------------------------------------------------------------- DRE consolidada
+def dre_xlsx(linhas, base_r, ano, faixa, empresa):
+    import io
+    dados = []
+    for nome, d, tipo, forte in linhas:
+        p, r, a = d["p"], d["r"], d["a"]; vr = r - p; vp = (vr / p * 100) if p else 0.0
+        av = (r / base_r * 100) if base_r else 0.0; ah = ((r - a) / a * 100) if a else 0.0
+        dados.append({"Linha": nome, "Planejado": round(p, 2), "Realizado": round(r, 2),
+                      f"Ano anterior ({ano-1})": round(a, 2), "Var (R$)": round(vr, 2),
+                      "Var (%)": round(vp, 2), "AV %": round(av, 2), "AH %": round(ah, 2)})
+    df = pd.DataFrame(dados)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as x:
+        df.to_excel(x, index=False, sheet_name="DRE", startrow=2)
+        ws = x.sheets["DRE"]
+        ws["A1"] = f"DRE — {empresa} — {faixa}"
+        try:
+            from openpyxl.styles import Font
+            ws["A1"].font = Font(bold=True, size=13)
+            for cell in ws[3]:  # cabeçalho (linha 3, pois startrow=2)
+                cell.font = Font(bold=True)
+            ws.column_dimensions["A"].width = 42
+            for col in "BCDEFGHI":
+                ws.column_dimensions[col].width = 16
+        except Exception:
+            pass
+    return buf.getvalue()
+
+@fragment
+def _mapa_dre_frag(contas, mapa, c, prof):
+    """Grade para mapear contas do orçamento -> linha da DRE. Roda isolada (fragment)."""
+    OPCOES = ["Fora da DRE"] + DRE_DESP_LINHAS
+    st.caption("Marque quais contas do orçamento são despesa operacional e em qual grupo entram. "
+               "Deixe **Fora da DRE** o que já vem dos módulos próprios (receita, deduções, CMV, pessoal) ou não é despesa. A edição roda isolada.")
+    dm = pd.DataFrame({
+        "Conta": [f"{cod} · {desc}" for cod, desc in contas],
+        "Linha da DRE": [mapa.get(cod, "Fora da DRE") for cod, desc in contas],
+    })
+    ed = st.data_editor(dm, key="dre_mapa_grid", hide_index=True, use_container_width=True, num_rows="fixed",
+                        disabled=["Conta"],
+                        column_config={"Linha da DRE": st.column_config.SelectboxColumn(options=OPCOES)})
+    if st.button("Salvar mapeamento", key="dre_mapa_save", type="primary"):
+        novos = list(ed["Linha da DRE"]); mudou = 0
+        for i, (cod, desc) in enumerate(contas):
+            nova = str(novos[i]) if novos[i] in OPCOES else "Fora da DRE"
+            atual = mapa.get(cod, "Fora da DRE")
+            if nova != atual:
+                c.table("dre_mapa").upsert(dict(conta_cod=int(cod), conta_desc=desc, linha=nova,
+                    atualizado_por=prof.get("nome", "")), on_conflict="conta_cod").execute()
+                mudou += 1
+        if mudou:
+            limpar_cache(); st.success(f"{mudou} conta(s) remapeada(s)."); st.rerun()
+        else:
+            st.info("Nenhuma alteração no mapeamento.")
+
+def tela_dre(c, prof, ano):
+    EMP = {1: "PISA", 2: "KING"}
+    banda = get_faixa(c)
+    st.markdown("<div class='modtag'>DRE — Demonstrativo de Resultados</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Receita, Deduções, CMV e Pessoal vêm dos módulos dedicados; as demais despesas vêm do orçamento conforme o mapeamento de contas. Planejado x Realizado, com ano anterior, AV e AH.</div>", unsafe_allow_html=True)
+
+    f = st.columns([1.2, 1.1, 1.1, 1.6])
+    emp = f[0].selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="dre_emp")
+    de = f[1].selectbox("Mês inicial", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="dre_de")
+    ate = f[2].selectbox("Mês final", list(range(1, 13)), index=11, format_func=lambda m: MESES[m], key="dre_ate")
+    visao = f[3].radio("Visão", ["Mensal", "Acumulada"], horizontal=True, key="dre_visao")
+    if ate < de: ate = de
+    meses = list(range(de, ate + 1)) if visao == "Mensal" else list(range(1, ate + 1))
+    faixa = f"{MESES[meses[0]]}–{MESES[meses[-1]]}/{ano}" + (" (acumulado)" if visao == "Acumulada" else "")
+
+    st.caption("Exibir colunas:")
+    cc = st.columns(7)
+    col_plan = cc[0].checkbox("Planejado", True, key="dc_p")
+    col_real = cc[1].checkbox("Realizado", True, key="dc_r")
+    col_ant = cc[2].checkbox(f"Ano ant. ({ano-1})", False, key="dc_a")
+    col_vr = cc[3].checkbox("Var (R$)", True, key="dc_vr")
+    col_vp = cc[4].checkbox("Var (%)", True, key="dc_vp")
+    col_av = cc[5].checkbox("AV %", False, key="dc_av")
+    col_ah = cc[6].checkbox("AH %", False, key="dc_ah")
+
+    def agg(loader, kp, kr):
+        def sm(rows):
+            p = r = 0.0
+            for x in rows:
+                if int(x.get("mes", 0) or 0) in meses and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
+                    p += float(x.get(kp) or 0); r += float(x.get(kr) or 0)
+            return p, r
+        p, r = sm(loader(ano) or [])
+        _, a = sm(loader(ano - 1) or [])
+        return {"p": p, "r": r, "a": a}
+
+    rec = agg(carregar_receita, "valor_planejado", "valor_realizado")
+    ded = agg(carregar_deducao, "valor_planejado", "valor_realizado")
+    cmv = agg(carregar_cmv, "valor_planejado", "valor_realizado")
+    pes = agg(carregar_hc_custo, "valor_orcado", "valor_realizado")
+    dif = lambda a, b: {"p": a["p"] - b["p"], "r": a["r"] - b["r"], "a": a["a"] - b["a"]}
+    rl = dif(rec, ded); lb = dif(rl, cmv)
+
+    # ----- despesas operacionais vindas do orçamento (via mapa de contas) -----
+    mapa = {int(x["conta_cod"]): x.get("linha") for x in carregar_dre_mapa() if x.get("conta_cod") is not None}
+    orc_cur = carregar_orc(ano) or []
+    orc_prev = carregar_orc(ano - 1) or []
+    grp = {g: {"p": 0.0, "r": 0.0, "a": 0.0} for g in DRE_DESP_LINHAS}
+    for x in orc_cur:
+        if int(x.get("mes", 0) or 0) in meses and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
+            g = mapa.get(int(x.get("conta_cod", 0) or 0))
+            if g in grp:
+                grp[g]["p"] += float(x.get("valor_planejado") or 0); grp[g]["r"] += float(x.get("valor_realizado") or 0)
+    for x in orc_prev:
+        if int(x.get("mes", 0) or 0) in meses and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
+            g = mapa.get(int(x.get("conta_cod", 0) or 0))
+            if g in grp:
+                grp[g]["a"] += float(x.get("valor_realizado") or 0)
+    desp_tot = {"p": sum(grp[g]["p"] for g in grp), "r": sum(grp[g]["r"] for g in grp), "a": sum(grp[g]["a"] for g in grp)}
+    resop = {"p": lb["p"] - pes["p"] - desp_tot["p"], "r": lb["r"] - pes["r"] - desp_tot["r"], "a": lb["a"] - pes["a"] - desp_tot["a"]}
+    base_r = rl["r"]
+
+    heads = ["Linha"]
+    if col_plan: heads.append("Planejado")
+    if col_real: heads.append("Realizado")
+    if col_ant: heads.append(f"Ano ant. ({ano-1})")
+    if col_vr: heads.append("Var. (R$)")
+    if col_vp: heads.append("Var. (%)")
+    if col_av: heads.append("AV %")
+    if col_ah: heads.append("AH %")
+    th = f"<th style='text-align:left'>{heads[0]}</th>" + "".join(f"<th>{h}</th>" for h in heads[1:])
+
+    def linha(nome, d, tipo, forte=False):
+        p, r, a = d["p"], d["r"], d["a"]
+        vr = r - p; vp = (vr / p * 100) if p else 0.0
+        if tipo == "cost":
+            cor = CINZA_TXT if (p and abs(vp) <= banda) else (VERMELHO if vr > 0 else VERDE)
+        else:
+            cor = CINZA_TXT if (p and abs(vp) <= banda) else (VERDE if vr >= 0 else VERMELHO)
+        av = (r / base_r * 100) if base_r else 0.0
+        ah = ((r - a) / a * 100) if a else 0.0
+        b0, b1 = ("<b>", "</b>") if forte else ("", "")
+        tds = [f"<td style='text-align:left'>{b0}{nome}{b1}</td>"]
+        if col_plan: tds.append(f"<td>{b0}{brl(p)}{b1}</td>")
+        if col_real: tds.append(f"<td>{b0}{brl(r)}{b1}</td>")
+        if col_ant: tds.append(f"<td>{b0}{brl(a) if a else '—'}{b1}</td>")
+        if col_vr: tds.append(f"<td style='color:{cor}'>{b0}{brl(vr)}{b1}</td>")
+        if col_vp: tds.append(f"<td style='color:{cor}'>{b0}{pct_txt(vp)}{b1}</td>")
+        if col_av: tds.append(f"<td>{b0}{pct_txt(av)}{b1}</td>")
+        if col_ah: tds.append(f"<td>{b0}{(pct_txt(ah) if a else '—')}{b1}</td>")
+        cls = " class='mark'" if forte else ""
+        return f"<tr{cls}>{''.join(tds)}</tr>"
+
+    linhas_dre = [("Receita Bruta de Vendas", rec, "rev", False),
+                  ("(−) Deduções de Vendas", ded, "cost", False),
+                  ("(=) Receita Líquida", rl, "rev", True),
+                  ("(−) CMV", cmv, "cost", False),
+                  ("(=) Lucro Bruto", lb, "rev", True),
+                  ("(−) Despesas com Pessoal", pes, "cost", False)]
+    for g in DRE_DESP_LINHAS:
+        if grp[g]["p"] or grp[g]["r"] or grp[g]["a"]:
+            linhas_dre.append((f"(−) {g}", grp[g], "cost", False))
+    linhas_dre.append(("(=) Resultado Operacional", resop, "rev", True))
+    corpo = "".join(linha(n, d, t, forte=fo) for n, d, t, fo in linhas_dre)
+
+    st.caption(f"Período: {faixa} · Empresa: {'Todas' if not emp else EMP[emp]} · AV = % da Receita Líquida · AH = Realizado vs {ano-1}.")
+    st.markdown(f"""<div class='scroll'><table class="lle"><tr>{th}</tr>{corpo}</table></div>""", unsafe_allow_html=True)
+    try:
+        st.download_button("📥 Baixar DRE (Excel)",
+                           data=dre_xlsx(linhas_dre, base_r, ano, faixa, ("Todas" if not emp else EMP[emp])),
+                           file_name=f"DRE_{('todas' if not emp else EMP[emp])}_{ano}.xlsx", mime=XLSX_MIME, key="dre_dl")
+    except Exception:
+        pass
+    if not any(grp[g]["p"] or grp[g]["r"] for g in DRE_DESP_LINHAS):
+        st.info("Nenhuma despesa operacional mapeada ainda. Abra **Mapear contas do orçamento** abaixo para incluir as despesas na DRE.")
+
+    # ----- mapeamento de contas -----
+    contas = sorted({(int(x["conta_cod"]), str(x.get("conta_desc", ""))) for x in orc_cur if x.get("conta_cod") is not None})
+    with st.expander("⚙️ Mapear contas do orçamento para a DRE"):
+        if not contas:
+            st.caption("Nenhuma conta de orçamento carregada para este ano.")
+        else:
+            _mapa_dre_frag(contas, mapa, c, prof)
+
+# ---------------------------------------------------------------- investimentos
+def tela_investimento(c, prof, ano):
+    EMP = {1: "PISA", 2: "KING"}
+    banda = get_faixa(c)
+    st.markdown("<div class='modtag'>Investimentos</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Planejado x realizado por empresa e mês (investimentos / CAPEX). Convenção: realizado abaixo do planejado é favorável (investiu menos que o previsto).</div>", unsafe_allow_html=True)
+
+    rows = carregar_investimento(ano)
+    dfr = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ano", "mes", "uni_cod", "unidade", "valor_planejado", "valor_realizado"])
+    for col in ("valor_planejado", "valor_realizado"):
+        if col not in dfr.columns: dfr[col] = 0.0
+
+    emp = st.selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="inv_emp")
+    scope = dfr if not emp else dfr[dfr["uni_cod"] == emp]
+
+    if scope.empty:
+        g = pd.DataFrame(0.0, index=range(1, 13), columns=["valor_planejado", "valor_realizado"])
+    else:
+        g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
+    tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
+    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+
+    def cor_inv(v, pl):
+        p = (v / pl * 100) if pl else 0.0
+        if pl and abs(p) <= banda: return CINZA_TXT
+        return VERDE if v <= 0 else VERMELHO
+
+    k = st.columns(4)
+    kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
+           ("Variação (R$)", brl(var), cor_inv(var, tp)), ("Variação (%)", pct_txt(pct), cor_inv(var, tp))]
+    for col, (t, v, cr) in zip(k, kpi):
+        col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
+                     f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
+
+    st.markdown("#### Evolução mensal")
+    linhas = ""
+    for m in range(1, 13):
+        vp = float(g.loc[m, "valor_planejado"]); vr = float(g.loc[m, "valor_realizado"])
+        v = vr - vp; p = (v / vp * 100) if vp else 0.0
+        if vr == 0 and vp == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem dados", CINZA_TXT); cr = CINZA_TXT
+        elif vr == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem realizado", CINZA_TXT); cr = CINZA_TXT
+        else:
+            cr = cor_inv(v, vp)
+            lab = "Neutro" if cr == CINZA_TXT else ("Favorável" if v <= 0 else "Desfavorável")
+            vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
+        linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
+                   f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
+    tcor = cor_inv(var, tp)
+    total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
+             f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
+             f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
+    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
+        <th style='text-align:left'>Mês</th><th>Planejado</th><th>Realizado</th>
+        <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}{total}</table></div>""", unsafe_allow_html=True)
+
+    _registro_mensal_frag("investimento_valor", "investimento_log", carregar_investimento_log, dfr, emp, ano, c, prof, "investimentos", custo=True)
+
 # ---------------------------------------------------------------- administração
 def tela_admin(c, prof, ano):
     st.markdown("<div class='modtag'>Administração de acessos</div>", unsafe_allow_html=True)
@@ -1813,21 +2073,23 @@ def render_app(c, prof):
         cg = {}
 
     if is_ctrl:
-        NAV = ["💰 Receita de Vendas", "➖ Deduções de Vendas", "🧾 CMV",
+        NAV = ["💰 Receita de Vendas", "➖ Deduções de Vendas", "🧾 CMV", "📈 DRE",
                "📊 Acompanhamento de Despesas", "📥 Justificativas recebidas",
-               "👥 Gestão de Gastos com Pessoal", "✏️ Manutenção Orçamento",
+               "👥 Gestão de Gastos com Pessoal", "🏗️ Investimentos", "✏️ Manutenção Orçamento",
                "🔑 Administração de acessos", "⬆️ Importar dados"]
         aba = st.radio("Navegação", NAV, horizontal=True, key="nav_ctrl", label_visibility="collapsed")
         st.markdown("<hr style='margin:.2rem 0 1rem; border:none; border-top:1px solid #E4E8F0'>", unsafe_allow_html=True)
         if aba == NAV[0]:   tela_receita(c, prof, ano)
         elif aba == NAV[1]: tela_deducao(c, prof, ano)
         elif aba == NAV[2]: tela_cmv(c, prof, ano)
-        elif aba == NAV[3]: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
-        elif aba == NAV[4]: tela_painel(c, prof, banda, df_orc, cg, ano, mes)
-        elif aba == NAV[5]: tela_headcount(c, prof, ano, mes)
-        elif aba == NAV[6]: tela_editar_orcado(c, prof, df_orc, ano, mes)
-        elif aba == NAV[7]: tela_admin(c, prof, ano)
-        elif aba == NAV[8]: tela_importar(c, ano)
+        elif aba == NAV[3]: tela_dre(c, prof, ano)
+        elif aba == NAV[4]: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
+        elif aba == NAV[5]: tela_painel(c, prof, banda, df_orc, cg, ano, mes)
+        elif aba == NAV[6]: tela_headcount(c, prof, ano, mes)
+        elif aba == NAV[7]: tela_investimento(c, prof, ano)
+        elif aba == NAV[8]: tela_editar_orcado(c, prof, df_orc, ano, mes)
+        elif aba == NAV[9]: tela_admin(c, prof, ano)
+        elif aba == NAV[10]: tela_importar(c, ano)
     else:
         tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
 
