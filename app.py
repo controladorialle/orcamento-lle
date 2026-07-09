@@ -323,6 +323,20 @@ def _q_cmv_log(tok, rtok, limite):
     except Exception: return []
 def carregar_cmv_log(limite=200): return _q_cmv_log(*_tok(), limite)
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_deducao(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("deducao_valor").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
+def carregar_deducao(ano=2026): return _q_deducao(*_tok(), ano)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_deducao_log(tok, rtok, limite):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("deducao_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+    except Exception: return []
+def carregar_deducao_log(limite=200): return _q_deducao_log(*_tok(), limite)
+
 def limpar_cache():
     """Limpeza total — usar em importações (mudam orçado e operacional)."""
     try: st.cache_data.clear()
@@ -1463,6 +1477,67 @@ def tela_cmv(c, prof, ano):
 
     _registro_mensal_frag("cmv_valor", "cmv_log", carregar_cmv_log, dfr, emp, ano, c, prof, "CMV", custo=True)
 
+# ---------------------------------------------------------------- deduções de vendas
+def tela_deducao(c, prof, ano):
+    EMP = {1: "PISA", 2: "KING"}
+    banda = get_faixa(c)
+    st.markdown("<div class='modtag'>Deduções de Vendas</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Planejado x realizado por empresa e mês (devoluções e impostos sobre vendas). Convenção: realizado abaixo do planejado é favorável (deduziu menos).</div>", unsafe_allow_html=True)
+
+    rows = carregar_deducao(ano)
+    dfr = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ano", "mes", "uni_cod", "unidade", "valor_planejado", "valor_realizado"])
+    for col in ("valor_planejado", "valor_realizado"):
+        if col not in dfr.columns: dfr[col] = 0.0
+
+    emp = st.selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="ded_emp")
+    scope = dfr if not emp else dfr[dfr["uni_cod"] == emp]
+
+    if scope.empty:
+        g = pd.DataFrame(0.0, index=range(1, 13), columns=["valor_planejado", "valor_realizado"])
+    else:
+        g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
+    tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
+    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+
+    def cor_ded(v, pl):  # dedução: deduzir menos que o previsto (v<=0) é favorável
+        p = (v / pl * 100) if pl else 0.0
+        if pl and abs(p) <= banda: return CINZA_TXT
+        return VERDE if v <= 0 else VERMELHO
+
+    # KPIs
+    k = st.columns(4)
+    kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
+           ("Variação (R$)", brl(var), cor_ded(var, tp)), ("Variação (%)", pct_txt(pct), cor_ded(var, tp))]
+    for col, (t, v, cr) in zip(k, kpi):
+        col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
+                     f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
+
+    # evolução mensal
+    st.markdown("#### Evolução mensal")
+    linhas = ""
+    for m in range(1, 13):
+        vp = float(g.loc[m, "valor_planejado"]); vr = float(g.loc[m, "valor_realizado"])
+        v = vr - vp; p = (v / vp * 100) if vp else 0.0
+        if vr == 0 and vp == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem dados", CINZA_TXT); cr = CINZA_TXT
+        elif vr == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem realizado", CINZA_TXT); cr = CINZA_TXT
+        else:
+            cr = cor_ded(v, vp)
+            lab = "Neutro" if cr == CINZA_TXT else ("Favorável" if v <= 0 else "Desfavorável")
+            vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
+        linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
+                   f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
+    tcor = cor_ded(var, tp)
+    total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
+             f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
+             f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
+    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
+        <th style='text-align:left'>Mês</th><th>Planejado</th><th>Realizado</th>
+        <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}{total}</table></div>""", unsafe_allow_html=True)
+
+    _registro_mensal_frag("deducao_valor", "deducao_log", carregar_deducao_log, dfr, emp, ano, c, prof, "deduções", custo=True)
+
 # ---------------------------------------------------------------- administração
 def tela_admin(c, prof, ano):
     st.markdown("<div class='modtag'>Administração de acessos</div>", unsafe_allow_html=True)
@@ -1635,19 +1710,21 @@ def render_app(c, prof):
         cg = {}
 
     if is_ctrl:
-        NAV = ["📊 Acompanhamento", "📥 Justificativas recebidas", "💰 Receita de Vendas", "🧾 CMV",
+        NAV = ["💰 Receita de Vendas", "➖ Deduções de Vendas", "🧾 CMV",
+               "📊 Acompanhamento de Despesas", "📥 Justificativas recebidas",
                "👥 Gestão de Gastos com Pessoal", "✏️ Manutenção Orçamento",
                "🔑 Administração de acessos", "⬆️ Importar dados"]
         aba = st.radio("Navegação", NAV, horizontal=True, key="nav_ctrl", label_visibility="collapsed")
         st.markdown("<hr style='margin:.2rem 0 1rem; border:none; border-top:1px solid #E4E8F0'>", unsafe_allow_html=True)
-        if aba == NAV[0]:   tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
-        elif aba == NAV[1]: tela_painel(c, prof, banda, df_orc, cg, ano, mes)
-        elif aba == NAV[2]: tela_receita(c, prof, ano)
-        elif aba == NAV[3]: tela_cmv(c, prof, ano)
-        elif aba == NAV[4]: tela_headcount(c, prof, ano, mes)
-        elif aba == NAV[5]: tela_editar_orcado(c, prof, df_orc, ano, mes)
-        elif aba == NAV[6]: tela_admin(c, prof, ano)
-        elif aba == NAV[7]: tela_importar(c, ano)
+        if aba == NAV[0]:   tela_receita(c, prof, ano)
+        elif aba == NAV[1]: tela_deducao(c, prof, ano)
+        elif aba == NAV[2]: tela_cmv(c, prof, ano)
+        elif aba == NAV[3]: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
+        elif aba == NAV[4]: tela_painel(c, prof, banda, df_orc, cg, ano, mes)
+        elif aba == NAV[5]: tela_headcount(c, prof, ano, mes)
+        elif aba == NAV[6]: tela_editar_orcado(c, prof, df_orc, ano, mes)
+        elif aba == NAV[7]: tela_admin(c, prof, ano)
+        elif aba == NAV[8]: tela_importar(c, ano)
     else:
         tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
 
