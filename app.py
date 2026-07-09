@@ -194,6 +194,17 @@ def get_cobranca(c):
 def set_cobranca(c, mes):
     c.table("config").upsert({"chave": "mes_inicio_cobranca", "valor": str(int(mes))}, on_conflict="chave").execute()
 
+def get_janela(c):
+    """Janela de justificativas aberta? (default: aberta)"""
+    try:
+        r = c.table("config").select("valor").eq("chave", "justif_aberta").execute()
+        return (str(r.data[0]["valor"]) != "0") if r.data else True
+    except Exception:
+        return True
+
+def set_janela(c, aberta):
+    c.table("config").upsert({"chave": "justif_aberta", "valor": "1" if aberta else "0"}, on_conflict="chave").execute()
+
 def ler_tudo(c, tabela, ano):
     """Le todas as linhas de uma tabela para o ano, paginando de 1000 em 1000."""
     linhas, passo, ini = [], 1000, 0
@@ -658,14 +669,18 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
             if status == "DEVOLVIDO" and j.get("comentario_controladoria"):
                 st.warning(f"Controladoria: {j['comentario_controladoria']}")
             if not is_ctrl and status in ("PENDENTE", "DEVOLVIDO"):
-                txt = st.text_area("Justificativa", value=j.get("texto", "") or "", key=f"txt_{kb}")
-                c1, c2 = st.columns(2)
-                if c1.button("Salvar rascunho", key=f"sv_{kb}"):
-                    c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
-                if c2.button("Enviar justificativa", key=f"en_{kb}", type="primary"):
-                    if not txt.strip(): st.error("Escreva a justificativa antes de enviar.")
-                    else:
-                        c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
+                if not get_janela(c):
+                    st.info(f"Justificativa: {j.get('texto') or '—'}")
+                    st.caption("🔒 Janela de justificativas fechada pela controladoria — não é possível enviar ou editar agora.")
+                else:
+                    txt = st.text_area("Justificativa", value=j.get("texto", "") or "", key=f"txt_{kb}")
+                    c1, c2 = st.columns(2)
+                    if c1.button("Salvar rascunho", key=f"sv_{kb}"):
+                        c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
+                    if c2.button("Enviar justificativa", key=f"en_{kb}", type="primary"):
+                        if not txt.strip(): st.error("Escreva a justificativa antes de enviar.")
+                        else:
+                            c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
             elif not is_ctrl:
                 st.info(f"Justificativa: {j.get('texto') or '—'}"); st.caption("Aguardando a controladoria — não editável.")
             if is_ctrl:
@@ -1092,6 +1107,18 @@ def relatorio_justificativas_xlsx(js_rows, df_orc, cg):
 def tela_painel(c, prof, banda, df_orc, cg, ano, mes):
     st.markdown("<div class='modtag'>Justificativas recebidas</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Pendências por gestor, resumo e detalhe das respostas</div>", unsafe_allow_html=True)
+
+    # ----- Janela de justificativas: abrir/fechar a qualquer momento -----
+    janela = get_janela(c)
+    jc = st.columns([3, 1.4])
+    jc[0].markdown(
+        f"<div style='padding-top:8px'>Janela de justificativas: "
+        f"<b style='color:{VERDE if janela else VERMELHO}'>{'ABERTA' if janela else 'FECHADA'}</b></div>",
+        unsafe_allow_html=True)
+    if jc[1].button(("🔒 Fechar janela" if janela else "🔓 Abrir janela"), key="toggle_janela", use_container_width=True):
+        set_janela(c, not janela); st.rerun()
+    st.caption("Com a janela fechada, os gestores não conseguem enviar nem editar justificativas. Você abre e fecha quando quiser (a aprovação/devolução pela controladoria continua funcionando).")
+    st.divider()
 
     # ----- Exportar relatório (.xlsx) -----
     with st.expander("📄 Exportar relatório de justificativas (.xlsx)"):
