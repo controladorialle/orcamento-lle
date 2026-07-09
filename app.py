@@ -1929,11 +1929,68 @@ def tela_investimento(c, prof, ano):
     _registro_mensal_frag("investimento_valor", "investimento_log", carregar_investimento_log, dfr, emp, ano, c, prof, "investimentos", custo=True)
 
 # ---------------------------------------------------------------- administração
+def _dump_tabela(c, tabela, cap=200000):
+    """Lê a tabela inteira, paginando de 1000 em 1000 (para backup)."""
+    linhas, passo, ini = [], 1000, 0
+    while ini < cap:
+        try:
+            lote = c.table(tabela).select("*").range(ini, ini + passo - 1).execute().data or []
+        except Exception:
+            return linhas
+        linhas.extend(lote)
+        if len(lote) < passo:
+            break
+        ini += passo
+    return linhas
+
+def backup_xlsx(c):
+    """Backup completo: uma aba por tabela. Não inclui operacional_detalhe (raw, reimportável)."""
+    import io
+    tabelas = ["orc_realizado", "receita_venda", "deducao_valor", "cmv_valor", "investimento_valor",
+               "hc_quadro", "hc_custo", "justificativa", "dre_mapa", "config", "cr_gestor", "gestor_usuario",
+               "orc_log", "hc_log", "receita_log", "cmv_log", "deducao_log", "investimento_log"]
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as x:
+        houve = False
+        for t in tabelas:
+            try:
+                rows = _dump_tabela(c, t)
+                df = pd.DataFrame(rows)
+                if df.empty:
+                    df = pd.DataFrame({"(sem dados)": []})
+                else:
+                    for col in df.columns:
+                        if df[col].dtype == object:
+                            df[col] = df[col].apply(lambda v: str(v) if isinstance(v, (dict, list)) else v)
+                df.to_excel(x, index=False, sheet_name=t[:31])
+                houve = True
+            except Exception:
+                continue
+        if not houve:
+            pd.DataFrame({"info": ["sem dados"]}).to_excel(x, index=False, sheet_name="info")
+    return buf.getvalue()
+
 def tela_admin(c, prof, ano):
     st.markdown("<div class='modtag'>Administração de acessos</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Substituição por desligamento, ativação e transferência de centros</div>", unsafe_allow_html=True)
     st.caption("Substitua o e-mail de um gestor desligado, ative/desative acessos e transfira centros de resultado. "
                "O histórico de justificativas é sempre preservado.")
+
+    with st.expander("💾 Backup dos dados"):
+        st.caption("Gera um Excel com uma aba por tabela (orçamento, receita, deduções, CMV, investimentos, pessoal, "
+                   "justificativas, mapeamento da DRE, cadastros, config e logs de auditoria). Guarde como cópia de segurança. "
+                   "Não inclui o detalhe de notas (operacional_detalhe), que é reimportável.")
+        bc = st.columns([1, 1, 2])
+        if bc[0].button("Gerar backup (.xlsx)", key="bk_gen"):
+            with st.spinner("Lendo tabelas…"):
+                st.session_state["_bk_bytes"] = backup_xlsx(c)
+                st.session_state["_bk_ts"] = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+        if st.session_state.get("_bk_bytes"):
+            bc[1].download_button("📥 Baixar backup", data=st.session_state["_bk_bytes"],
+                                  file_name=f"backup_orcamento_{st.session_state.get('_bk_ts','')}.xlsx",
+                                  mime=XLSX_MIME, key="bk_dl")
+            bc[2].caption(f"Backup gerado em {st.session_state.get('_bk_ts','')} — clique para baixar.")
+    st.divider()
 
     gestores = c.table("gestor").select("codigo, nome, papel").order("nome").execute().data or []
     usuarios = c.table("gestor_usuario").select("email, gestor_codigo, papel_acesso, ativo").execute().data or []
