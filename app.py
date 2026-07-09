@@ -28,6 +28,8 @@ MABREV = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Ou
 STATUS_LABEL = {"PENDENTE": "Pendente", "JUSTIFICADO": "Justificado", "EM_REVISAO": "Em revisão", "DEVOLVIDO": "Devolvido", "APROVADO": "Aprovado"}
 CATEGORIAS = [("SALARIOS", "Salários e ordenados"), ("ENCARGOS", "Encargos"), ("BENEFICIOS", "Benefícios"), ("OUTROS", "Outros de pessoal")]
 CAT_LABEL = dict(CATEGORIAS)
+DEDUCOES = ["Devolução de Vendas", "COFINS", "ICMS", "ICMS - Bonificação", "ICMS - ST",
+            "ICMS ST - Bonificação", "ICMS Subvenção", "IPI", "PIS"]
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Mapeamento das rubricas do template Treasy nas 4 categorias
 HC_MAP = {
@@ -1478,19 +1480,67 @@ def tela_cmv(c, prof, ano):
     _registro_mensal_frag("cmv_valor", "cmv_log", carregar_cmv_log, dfr, emp, ano, c, prof, "CMV", custo=True)
 
 # ---------------------------------------------------------------- deduções de vendas
+@fragment
+def _registro_deducao_frag(dfr, emp, conta, ano, c, prof):
+    """Grade editável Planejado/Realizado da dedução escolhida, por empresa e mês. Roda isolada."""
+    EMP = {1: "PISA", 2: "KING"}
+    st.divider()
+    st.markdown(f"#### Registrar / editar — {conta}")
+    st.caption("Preencha Planejado e Realizado por empresa e mês desta dedução. A edição roda isolada — o app não recarrega a cada célula. Toda alteração fica no log.")
+    emps = [1, 2] if not emp else [emp]
+    sub = dfr[dfr["conta"] == conta] if "conta" in dfr.columns else dfr.iloc[0:0]
+    idx = {(int(r["mes"]), int(r["uni_cod"])): r for _, r in sub.iterrows()}
+    keys, disp_mes, disp_emp, oplan, oreal = [], [], [], [], []
+    for u in emps:
+        for m in range(1, 13):
+            r = idx.get((m, u))
+            keys.append((m, u)); disp_mes.append(MESES[m]); disp_emp.append(EMP[u])
+            oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
+            oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
+    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, "Planejado": oplan, "Realizado": oreal})
+    ed = st.data_editor(dedit, key=f"ded_grid_{conta}_{emp}", hide_index=True, use_container_width=True,
+                        num_rows="fixed", disabled=["Mês", "Empresa"],
+                        column_config={"Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+    if st.button("Salvar deduções", key="ded_save", type="primary"):
+        np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"]); mudou = 0
+        for i, (m, u) in enumerate(keys):
+            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
+            except (TypeError, ValueError): continue
+            mud_p = abs(p_novo - oplan[i]) > 0.005; mud_r = abs(r_novo - oreal[i]) > 0.005
+            if not (mud_p or mud_r): continue
+            c.table("deducao_valor").upsert(dict(ano=ano, mes=m, uni_cod=u, unidade=EMP[u], conta=conta,
+                valor_planejado=p_novo, valor_realizado=r_novo, atualizado_por=prof.get("nome", "")),
+                on_conflict="ano,mes,uni_cod,conta").execute()
+            if mud_p:
+                c.table("deducao_log").insert(dict(ano=ano, mes=m, uni_cod=u, conta=conta, campo="valor_planejado",
+                    valor_antigo=oplan[i], valor_novo=p_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+            if mud_r:
+                c.table("deducao_log").insert(dict(ano=ano, mes=m, uni_cod=u, conta=conta, campo="valor_realizado",
+                    valor_antigo=oreal[i], valor_novo=r_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+        if mudou:
+            limpar_cache(); st.success(f"{mudou} alteração(ões) salva(s) e registrada(s) no log."); st.rerun()
+        else:
+            st.info("Nenhuma alteração detectada.")
+
 def tela_deducao(c, prof, ano):
     EMP = {1: "PISA", 2: "KING"}
     banda = get_faixa(c)
     st.markdown("<div class='modtag'>Deduções de Vendas</div>", unsafe_allow_html=True)
-    st.markdown("<div class='modsub'>Planejado x realizado por empresa e mês (devoluções e impostos sobre vendas). Convenção: realizado abaixo do planejado é favorável (deduziu menos).</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Planejado x realizado por empresa, mês e dedução (devoluções e impostos sobre vendas). Convenção: realizado abaixo do planejado é favorável (deduziu menos).</div>", unsafe_allow_html=True)
 
     rows = carregar_deducao(ano)
-    dfr = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ano", "mes", "uni_cod", "unidade", "valor_planejado", "valor_realizado"])
+    dfr = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ano", "mes", "uni_cod", "unidade", "conta", "valor_planejado", "valor_realizado"])
     for col in ("valor_planejado", "valor_realizado"):
         if col not in dfr.columns: dfr[col] = 0.0
+    if "conta" not in dfr.columns: dfr["conta"] = ""
 
-    emp = st.selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="ded_emp")
+    fcol = st.columns([1.3, 2.2])
+    emp = fcol[0].selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="ded_emp")
+    conta = fcol[1].selectbox("Dedução", ["Todas"] + DEDUCOES, key="ded_conta")
+
     scope = dfr if not emp else dfr[dfr["uni_cod"] == emp]
+    if conta != "Todas": scope = scope[scope["conta"] == conta]
 
     if scope.empty:
         g = pd.DataFrame(0.0, index=range(1, 13), columns=["valor_planejado", "valor_realizado"])
@@ -1499,20 +1549,20 @@ def tela_deducao(c, prof, ano):
     tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
     var = tr - tp; pct = (var / tp * 100) if tp else 0.0
 
-    def cor_ded(v, pl):  # dedução: deduzir menos que o previsto (v<=0) é favorável
+    def cor_ded(v, pl):
         p = (v / pl * 100) if pl else 0.0
         if pl and abs(p) <= banda: return CINZA_TXT
         return VERDE if v <= 0 else VERMELHO
 
-    # KPIs
+    escopo_lbl = "todas as deduções" if conta == "Todas" else conta
     k = st.columns(4)
-    kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
+    kpi = [(f"Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
            ("Variação (R$)", brl(var), cor_ded(var, tp)), ("Variação (%)", pct_txt(pct), cor_ded(var, tp))]
     for col, (t, v, cr) in zip(k, kpi):
         col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
                      f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
+    st.caption(f"Exibindo: {escopo_lbl}.")
 
-    # evolução mensal
     st.markdown("#### Evolução mensal")
     linhas = ""
     for m in range(1, 13):
@@ -1536,7 +1586,33 @@ def tela_deducao(c, prof, ano):
         <th style='text-align:left'>Mês</th><th>Planejado</th><th>Realizado</th>
         <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}{total}</table></div>""", unsafe_allow_html=True)
 
-    _registro_mensal_frag("deducao_valor", "deducao_log", carregar_deducao_log, dfr, emp, ano, c, prof, "deduções", custo=True)
+    # registro por dedução escolhida
+    if conta == "Todas":
+        st.divider()
+        st.info("Selecione uma **dedução específica** no seletor acima para registrar/editar seus valores por mês.")
+    else:
+        _registro_deducao_frag(dfr, emp, conta, ano, c, prof)
+
+    # histórico (todas as deduções)
+    log = carregar_deducao_log(300)
+    if log:
+        st.markdown("###### Histórico de alterações de deduções")
+        CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
+        ln = ""
+        for glog in log[:300]:
+            quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
+            va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
+            seta = VERMELHO if vn > va else VERDE
+            ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
+                   f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
+                   f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
+                   f"<td style='text-align:left'>{glog.get('conta','') or '\u2014'}</td>"
+                   f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
+                   f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
+        st.markdown(f"""<table class="lle"><tr>
+            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+            <th style='text-align:center'>Empresa</th><th style='text-align:left'>Dedução</th>
+            <th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- administração
 def tela_admin(c, prof, ano):
