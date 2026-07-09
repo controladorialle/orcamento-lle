@@ -30,10 +30,14 @@ CATEGORIAS = [("SALARIOS", "Salários e ordenados"), ("ENCARGOS", "Encargos"), (
 CAT_LABEL = dict(CATEGORIAS)
 DEDUCOES = ["Devolução de Vendas", "COFINS", "ICMS", "ICMS - Bonificação", "ICMS - ST",
             "ICMS ST - Bonificação", "ICMS Subvenção", "IPI", "PIS"]
-DRE_GRUPOS = [("Receitas Financeiras", "rev"), ("Despesas Comerciais", "cost"),
-              ("Despesas Administrativas", "cost"), ("Despesas Financeiras", "cost"),
-              ("Outras Despesas Operacionais", "cost")]
-FIN_GRUPOS = {"Receitas Financeiras", "Despesas Financeiras"}
+DRE_GRUPOS = [("Receitas Financeiras", "rev"), ("Outras Receitas Não Operacionais", "rev"),
+              ("Despesas Comerciais", "cost"), ("Despesas Administrativas", "cost"),
+              ("Despesas Financeiras", "cost"), ("Outras Despesas Operacionais", "cost"),
+              ("Impostos (IRPJ/CSLL)", "cost")]
+DRE_OP_COST = ["Despesas Comerciais", "Despesas Administrativas", "Outras Despesas Operacionais"]
+DRE_PRE_ADD = ["Receitas Financeiras", "Outras Receitas Não Operacionais"]
+DRE_PRE_SUB = ["Despesas Financeiras"]
+DRE_IMPOSTO = "Impostos (IRPJ/CSLL)"
 DRE_LINHAS_OPC = [g for g, _ in DRE_GRUPOS]
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Mapeamento das rubricas do template Treasy nas 4 categorias
@@ -1781,12 +1785,13 @@ def tela_dre(c, prof, ano):
             if g in grp:
                 grp[g]["a"] += float(x.get("valor_realizado") or 0)
     # despesas operacionais = grupos de custo que NÃO são financeiros
-    op_cost = [g for g, t in DRE_GRUPOS if t == "cost" and g not in FIN_GRUPOS]
-    op_sub = {k: sum(grp[g][k] for g in op_cost) for k in ("p", "r", "a")}
+    op_sub = {k: sum(grp[g][k] for g in DRE_OP_COST) for k in ("p", "r", "a")}
     resop = {k: lb[k] - pes[k] - op_sub[k] for k in ("p", "r", "a")}
-    recfin = grp.get("Receitas Financeiras", {"p": 0.0, "r": 0.0, "a": 0.0})
-    despfin = grp.get("Despesas Financeiras", {"p": 0.0, "r": 0.0, "a": 0.0})
-    res_ai = {k: resop[k] + recfin[k] - despfin[k] for k in ("p", "r", "a")}
+    pre_add = {k: sum(grp[g][k] for g in DRE_PRE_ADD) for k in ("p", "r", "a")}
+    pre_sub = {k: sum(grp[g][k] for g in DRE_PRE_SUB) for k in ("p", "r", "a")}
+    res_ai = {k: resop[k] + pre_add[k] - pre_sub[k] for k in ("p", "r", "a")}
+    imp = grp.get(DRE_IMPOSTO, {"p": 0.0, "r": 0.0, "a": 0.0})
+    res_liq = {k: res_ai[k] - imp[k] for k in ("p", "r", "a")}
     base_r = rl["r"]
 
     heads = ["Linha"]
@@ -1826,17 +1831,23 @@ def tela_dre(c, prof, ano):
                   ("(−) CMV", cmv, "cost", False),
                   ("(=) Lucro Bruto", lb, "rev", True),
                   ("(−) Despesas com Pessoal", pes, "cost", False)]
-    for g in op_cost:
+    for g in DRE_OP_COST:
         if grp[g]["p"] or grp[g]["r"] or grp[g]["a"]:
             linhas_dre.append((f"(−) {g}", grp[g], "cost", False))
     linhas_dre.append(("(=) Resultado Operacional", resop, "rev", True))
-    tem_fin = any(recfin[k] or despfin[k] for k in ("p", "r", "a"))
-    if tem_fin:
-        if any(recfin[k] for k in ("p", "r", "a")):
-            linhas_dre.append(("(+) Receitas Financeiras", recfin, "rev", False))
-        if any(despfin[k] for k in ("p", "r", "a")):
-            linhas_dre.append(("(−) Despesas Financeiras", despfin, "cost", False))
+    nz = lambda d: any(d[k] for k in ("p", "r", "a"))
+    tem_pre = any(nz(grp[g]) for g in DRE_PRE_ADD + DRE_PRE_SUB)
+    if tem_pre:
+        if nz(grp["Receitas Financeiras"]):
+            linhas_dre.append(("(+) Receitas Financeiras", grp["Receitas Financeiras"], "rev", False))
+        if nz(grp["Outras Receitas Não Operacionais"]):
+            linhas_dre.append(("(+) Outras Receitas Não Operacionais", grp["Outras Receitas Não Operacionais"], "rev", False))
+        if nz(grp["Despesas Financeiras"]):
+            linhas_dre.append(("(−) Despesas Financeiras", grp["Despesas Financeiras"], "cost", False))
         linhas_dre.append(("(=) Resultado antes de Impostos", res_ai, "rev", True))
+    if nz(imp):
+        linhas_dre.append(("(−) Impostos (IRPJ/CSLL)", imp, "cost", False))
+        linhas_dre.append(("(=) Resultado Líquido", res_liq, "rev", True))
     corpo = "".join(linha(n, d, t, forte=fo) for n, d, t, fo in linhas_dre)
 
     st.caption(f"Período: {faixa} · Empresa: {'Todas' if not emp else EMP[emp]} · AV = % da Receita Líquida · AH = Realizado vs {ano-1}.")
