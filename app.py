@@ -304,6 +304,20 @@ def _q_receita_log(tok, rtok, limite):
     except Exception: return []
 def carregar_receita_log(limite=200): return _q_receita_log(*_tok(), limite)
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_cmv(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("cmv_valor").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
+def carregar_cmv(ano=2026): return _q_cmv(*_tok(), ano)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_cmv_log(tok, rtok, limite):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("cmv_log").select("*").order("alterado_em", desc=True).limit(limite).execute().data or []
+    except Exception: return []
+def carregar_cmv_log(limite=200): return _q_cmv_log(*_tok(), limite)
+
 def limpar_cache():
     """Limpeza total — usar em importações (mudam orçado e operacional)."""
     try: st.cache_data.clear()
@@ -1384,6 +1398,128 @@ def tela_receita(c, prof, ano):
             <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
             <th style='text-align:center'>Empresa</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
 
+# ---------------------------------------------------------------- CMV (custo da mercadoria vendida)
+def tela_cmv(c, prof, ano):
+    EMP = {1: "PISA", 2: "KING"}
+    banda = get_faixa(c)
+    st.markdown("<div class='modtag'>CMV — Custo da Mercadoria Vendida</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Planejado x realizado por empresa e mês. Convenção de custo: realizado abaixo do planejado é favorável (gastou menos).</div>", unsafe_allow_html=True)
+
+    rows = carregar_cmv(ano)
+    dfr = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["ano", "mes", "uni_cod", "unidade", "valor_planejado", "valor_realizado"])
+    for col in ("valor_planejado", "valor_realizado"):
+        if col not in dfr.columns: dfr[col] = 0.0
+
+    emp = st.selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="cmv_emp")
+    scope = dfr if not emp else dfr[dfr["uni_cod"] == emp]
+
+    if scope.empty:
+        g = pd.DataFrame(0.0, index=range(1, 13), columns=["valor_planejado", "valor_realizado"])
+    else:
+        g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
+    tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
+    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+
+    def cor_cmv(v, pl):  # custo: gastar menos que o previsto (v<=0) é favorável
+        p = (v / pl * 100) if pl else 0.0
+        if pl and abs(p) <= banda: return CINZA_TXT
+        return VERDE if v <= 0 else VERMELHO
+
+    # KPIs
+    k = st.columns(4)
+    kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
+           ("Variação (R$)", brl(var), cor_cmv(var, tp)), ("Variação (%)", pct_txt(pct), cor_cmv(var, tp))]
+    for col, (t, v, cr) in zip(k, kpi):
+        col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
+                     f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
+
+    # evolução mensal
+    st.markdown("#### Evolução mensal")
+    linhas = ""
+    for m in range(1, 13):
+        vp = float(g.loc[m, "valor_planejado"]); vr = float(g.loc[m, "valor_realizado"])
+        v = vr - vp; p = (v / vp * 100) if vp else 0.0
+        if vr == 0 and vp == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem dados", CINZA_TXT); cr = CINZA_TXT
+        elif vr == 0:
+            vr_txt = "\u2014"; var_txt = "\u2014"; pctv = "\u2014"; status = chip("Sem realizado", CINZA_TXT); cr = CINZA_TXT
+        else:
+            cr = cor_cmv(v, vp)
+            lab = "Neutro" if cr == CINZA_TXT else ("Favorável" if v <= 0 else "Desfavorável")
+            vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
+        linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
+                   f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
+    tcor = cor_cmv(var, tp)
+    total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
+             f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
+             f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
+    st.markdown(f"""<div class='scroll'><table class="lle"><tr>
+        <th style='text-align:left'>Mês</th><th>Planejado</th><th>Realizado</th>
+        <th>Var. (R$)</th><th>Var. (%)</th><th>Status</th></tr>{linhas}{total}</table></div>""", unsafe_allow_html=True)
+
+    # ---------- registrar / editar ----------
+    st.divider()
+    st.markdown("#### Registrar / editar CMV")
+    st.caption("Preencha Planejado e Realizado por empresa e mês. Toda alteração fica registrada no log.")
+    emps = [1, 2] if not emp else [emp]
+    idx = {(int(r["mes"]), int(r["uni_cod"])): r for _, r in dfr.iterrows()}
+    keys, disp_mes, disp_emp, oplan, oreal = [], [], [], [], []
+    for u in emps:
+        for m in range(1, 13):
+            r = idx.get((m, u))
+            keys.append((m, u))
+            disp_mes.append(MESES[m]); disp_emp.append(EMP[u])
+            oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
+            oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
+    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, "Planejado": oplan, "Realizado": oreal})
+    ed = st.data_editor(dedit, key=f"cmv_grid_{emp}", hide_index=True, use_container_width=True,
+                        num_rows="fixed", disabled=["Mês", "Empresa"],
+                        column_config={"Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
+                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+    if st.button("Salvar CMV", key="cmv_save", type="primary"):
+        np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"])
+        mudou = 0
+        for i, (m, u) in enumerate(keys):
+            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
+            except (TypeError, ValueError): continue
+            mud_p = abs(p_novo - oplan[i]) > 0.005
+            mud_r = abs(r_novo - oreal[i]) > 0.005
+            if not (mud_p or mud_r): continue
+            c.table("cmv_valor").upsert(dict(ano=ano, mes=m, uni_cod=u, unidade=EMP[u],
+                valor_planejado=p_novo, valor_realizado=r_novo, atualizado_por=prof.get("nome", "")),
+                on_conflict="ano,mes,uni_cod").execute()
+            if mud_p:
+                c.table("cmv_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_planejado",
+                    valor_antigo=oplan[i], valor_novo=p_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+            if mud_r:
+                c.table("cmv_log").insert(dict(ano=ano, mes=m, uni_cod=u, campo="valor_realizado",
+                    valor_antigo=oreal[i], valor_novo=r_novo, alterado_por=prof.get("nome", ""))).execute(); mudou += 1
+        if mudou:
+            limpar_cache()
+            st.success(f"{mudou} alteração(ões) de CMV salva(s) e registrada(s) no log.")
+            st.rerun()
+        else:
+            st.info("Nenhuma alteração detectada.")
+
+    # ---------- histórico ----------
+    log = carregar_cmv_log(300)
+    if log:
+        st.markdown("###### Histórico de alterações de CMV")
+        CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
+        ln = ""
+        for glog in log[:300]:
+            quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
+            va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
+            seta = VERMELHO if vn > va else VERDE  # custo maior = vermelho
+            ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
+                   f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
+                   f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
+                   f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
+                   f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
+        st.markdown(f"""<table class="lle"><tr>
+            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+            <th style='text-align:center'>Empresa</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------------- administração
 def tela_admin(c, prof, ano):
     st.markdown("<div class='modtag'>Administração de acessos</div>", unsafe_allow_html=True)
@@ -1556,7 +1692,7 @@ def render_app(c, prof):
         cg = {}
 
     if is_ctrl:
-        NAV = ["📊 Acompanhamento", "📥 Justificativas recebidas", "💰 Receita de Vendas",
+        NAV = ["📊 Acompanhamento", "📥 Justificativas recebidas", "💰 Receita de Vendas", "🧾 CMV",
                "👥 Gestão de Gastos com Pessoal", "✏️ Manutenção Orçamento",
                "🔑 Administração de acessos", "⬆️ Importar dados"]
         aba = st.radio("Navegação", NAV, horizontal=True, key="nav_ctrl", label_visibility="collapsed")
@@ -1564,10 +1700,11 @@ def render_app(c, prof):
         if aba == NAV[0]:   tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
         elif aba == NAV[1]: tela_painel(c, prof, banda, df_orc, cg, ano, mes)
         elif aba == NAV[2]: tela_receita(c, prof, ano)
-        elif aba == NAV[3]: tela_headcount(c, prof, ano, mes)
-        elif aba == NAV[4]: tela_editar_orcado(c, prof, df_orc, ano, mes)
-        elif aba == NAV[5]: tela_admin(c, prof, ano)
-        elif aba == NAV[6]: tela_importar(c, ano)
+        elif aba == NAV[3]: tela_cmv(c, prof, ano)
+        elif aba == NAV[4]: tela_headcount(c, prof, ano, mes)
+        elif aba == NAV[5]: tela_editar_orcado(c, prof, df_orc, ano, mes)
+        elif aba == NAV[6]: tela_admin(c, prof, ano)
+        elif aba == NAV[7]: tela_importar(c, ano)
     else:
         tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
 
