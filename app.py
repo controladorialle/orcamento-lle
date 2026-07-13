@@ -149,6 +149,8 @@ def inject_css():
       table.lle tr.total td {{ font-weight:700; border-top:2px solid {AZUL_CORP}; background:#EEF2F8; }}
       table.lle tr.mark td {{ background:#FFF7E6; }}
       .scroll {{ overflow-x:auto; }}
+      table.lle.matrix {{ width:auto; min-width:100%; }}
+      table.lle.matrix th, table.lle.matrix td {{ white-space:nowrap; }}
 
       /* linha-cabeça do drill (CR) */
       .drow {{ display:grid; grid-template-columns:3.1fr 1.5fr 1.5fr 1.5fr 0.9fr 1.5fr; gap:0;
@@ -1936,8 +1938,7 @@ def tela_dre(c, prof, ano):
                 tds += f"<td>{b0}{cel(total_vals[i][1], kk)}{b1}</td>"
             cls = " class='mark'" if forte else ""
             corpo += f"<tr{cls}>{tds}</tr>"
-        st.markdown(f"""<div class='scroll'><table class="lle"><tr>{th}</tr>{corpo}</table></div>""", unsafe_allow_html=True)
-        st.caption("Formato mês a mês (como no Treasy). Em Acumulada, cada coluna soma de Janeiro até aquele mês.")
+        st.markdown(f"""<div class='scroll'><table class="lle matrix"><tr>{th}</tr>{corpo}</table></div>""", unsafe_allow_html=True)
 
     if not any(nz(gsum_span[g]) for g, _ in DRE_GRUPOS):
         st.info("Nenhuma conta do orçamento mapeada ainda. Abra **Mapear contas do orçamento** abaixo para incluir despesas e receitas financeiras na DRE.")
