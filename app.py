@@ -90,17 +90,19 @@ def inject_css():
       .side-logo {{ background:linear-gradient(135deg,{AZUL_PROFUNDO} 0%,{AZUL_CORP} 100%);
         border-radius:12px; padding:14px 16px; display:flex; align-items:center; gap:12px;
         margin-bottom:16px; box-shadow:0 3px 10px rgba(7,22,57,.18); }}
-      .side-logo-txt {{ color:#fff; font-weight:700; font-size:20px; letter-spacing:.5px; line-height:1; }}
-      .navsec {{ color:{CINZA_TXT}; font-size:11px; font-weight:700; letter-spacing:1.2px;
+      .side-logo-txt {{ color:#fff; font-weight:700; font-size:22px; letter-spacing:.5px; line-height:1; }}
+      .navsec {{ color:{CINZA_TXT}; font-size:13px; font-weight:700; letter-spacing:1.2px;
         text-transform:uppercase; margin:16px 4px 6px; }}
-      [data-testid="stSidebar"] .stButton>button {{ justify-content:flex-start; text-align:left;
-        font-size:15px; font-weight:600; border:none; background:transparent; color:#1f2b45;
+      [data-testid="stSidebar"] .stButton>button {{ justify-content:flex-start !important; text-align:left !important;
+        font-size:16px; font-weight:600; border:none; background:transparent; color:#1f2b45;
         padding:9px 12px; border-radius:8px; box-shadow:none; }}
+      [data-testid="stSidebar"] .stButton>button > div {{ justify-content:flex-start !important; width:100%; }}
+      [data-testid="stSidebar"] .stButton>button p {{ text-align:left !important; width:100%; margin:0; }}
       [data-testid="stSidebar"] .stButton>button:hover {{ background:{CINZA_BG}; color:{AZUL_PROFUNDO}; }}
       [data-testid="stSidebar"] .stButton>button[kind="primary"] {{ background:{AZUL_CORP}; color:#fff; }}
       [data-testid="stSidebar"] .stButton>button[kind="primary"]:hover {{ background:{AZUL_PROFUNDO}; }}
-      .side-user {{ font-size:14px; color:#1f2b45; margin:4px 4px; line-height:1.35; }}
-      .side-user span {{ color:{CINZA_TXT}; font-size:12px; }}
+      .side-user {{ font-size:15px; color:#1f2b45; margin:4px 4px; line-height:1.35; }}
+      .side-user span {{ color:{CINZA_TXT}; font-size:13px; }}
 
       /* tabs horizontais (barra navy + sublinhado dourado) */
       .stTabs [data-baseweb="tab-list"] {{ gap:2px; background:{AZUL_PROFUNDO}; padding:0 10px;
