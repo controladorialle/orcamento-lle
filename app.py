@@ -2310,16 +2310,24 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
     for mi in range(1, 13):
         data[MABREV[mi]] = [float((idx.get(cod, {}) or {}).get(f"m{mi}") or 0) for cod, _ in contas]
     df = pd.DataFrame(data)
-    colcfg = {MABREV[mi]: st.column_config.NumberColumn(format="%.2f", step=0.01) for mi in range(1, 13)}
+    colcfg = {MABREV[mi]: st.column_config.NumberColumn(f"{MABREV[mi]} (R$)", format="%.2f", step=0.01, help="Digite o valor planejado deste mês") for mi in range(1, 13)}
     disabled = ["Conta"] + ([] if editavel else [MABREV[mi] for mi in range(1, 13)])
+    if editavel:
+        st.markdown(
+            "<div style='background:#EEF2F8;border-left:4px solid " + AZUL_CORP + ";padding:9px 13px;"
+            "border-radius:6px;margin:2px 0 8px;font-size:14px;color:#1f2b45;'>"
+            "✍️ <b>Digite aqui:</b> em cada linha (conta), preencha o valor planejado de <b>Janeiro a Dezembro</b>. "
+            "Clique na célula do mês e digite o valor. A coluna <b>Conta</b> é fixa; as colunas dos meses (fundo branco) são editáveis.</div>",
+            unsafe_allow_html=True)
+    else:
+        st.caption("🔒 Somente leitura (janela fechada ou já enviado/aprovado).")
     ed = st.data_editor(df, key=f"plan_{ano}_{uni_cod}_{cr_cod}", hide_index=True, use_container_width=True,
                         num_rows="fixed", disabled=disabled, column_config=colcfg)
     if not editavel:
         return
-    st.caption("Preencha os 12 meses de cada conta. **Salvar rascunho** guarda sem enviar; **Enviar** manda para a controladoria (não editável até devolução).")
     b = st.columns([1, 1.3, 3])
-    salvar = b[0].button("Salvar rascunho", key=f"plan_sv_{uni_cod}_{cr_cod}")
-    enviar = b[1].button("Enviar para controladoria", key=f"plan_en_{uni_cod}_{cr_cod}", type="primary")
+    salvar = b[0].button("💾 Salvar rascunho", key=f"plan_sv_{uni_cod}_{cr_cod}")
+    enviar = b[1].button("📤 Enviar para controladoria", key=f"plan_en_{uni_cod}_{cr_cod}", type="primary")
     if salvar or enviar:
         for i, (cod, desc) in enumerate(contas):
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
@@ -2343,7 +2351,7 @@ def tela_planejamento_gestor(c, prof, ano):
     if not crs:
         st.info(f"Não há estrutura de contas do ano {ano-1} nos seus centros de resultado para preencher.")
         return
-    cr_opt = st.selectbox("Centro de resultado", crs, format_func=lambda x: f"{x[1]} · {x[2]}", key="plan_cr")
+    cr_opt = st.selectbox("1) Escolha o centro de resultado", crs, format_func=lambda x: f"{x[1]} · {x[2]}", key="plan_cr")
     uni_cod, cr_cod, cr_nome = cr_opt
     contas = sorted({(int(r["conta_cod"]), r.get("conta_desc", "")) for r in ref
                      if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None})
@@ -2351,7 +2359,7 @@ def tela_planejamento_gestor(c, prof, ano):
     stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s.get("status", "RASCUNHO") for s in carregar_orc_plan_status(ano)}
     status = stt.get((uni_cod, cr_cod), "RASCUNHO")
     cor = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}.get(status, CINZA_TXT)
-    st.markdown(f"Situação deste CR: {chip(status, cor)}", unsafe_allow_html=True)
+    st.markdown(f"CR selecionado: <b>{cr_cod} · {cr_nome}</b> &nbsp;·&nbsp; Situação: {chip(status, cor)}", unsafe_allow_html=True)
     if not aberta and status != "APROVADO":
         st.info(f"A janela de preenchimento do orçamento {ano} está fechada. Você pode consultar, mas não editar.")
     if status == "APROVADO":
@@ -2359,6 +2367,7 @@ def tela_planejamento_gestor(c, prof, ano):
     if status == "DEVOLVIDO":
         st.warning("Devolvido pela controladoria para ajuste. Corrija e envie novamente.")
     editavel = aberta and status not in ("APROVADO", "ENVIADO")
+    st.markdown("<div style='font-weight:600;color:" + AZUL_PROFUNDO + ";margin-top:6px'>2) Preencha os valores por mês e 3) envie</div>", unsafe_allow_html=True)
     _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel)
 
 def _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref):
