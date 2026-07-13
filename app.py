@@ -402,6 +402,30 @@ def _q_investimento_log(tok, rtok, limite):
     except Exception: return []
 def carregar_investimento_log(limite=200): return _q_investimento_log(*_tok(), limite)
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_orc_plan(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("orc_plan").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
+def carregar_orc_plan(ano): return _q_orc_plan(*_tok(), ano)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _q_orc_plan_status(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("orc_plan_status").select("*").eq("ano", ano).execute().data or []
+    except Exception: return []
+def carregar_orc_plan_status(ano): return _q_orc_plan_status(*_tok(), ano)
+
+def get_plan_janela(c, ano):
+    """Janela de preenchimento do orçamento do ano-alvo aberta? (default: fechada)"""
+    try:
+        r = c.table("config").select("valor").eq("chave", f"plan_aberta_{ano}").execute()
+        return (str(r.data[0]["valor"]) == "1") if r.data else False
+    except Exception:
+        return False
+def set_plan_janela(c, ano, aberta):
+    c.table("config").upsert({"chave": f"plan_aberta_{ano}", "valor": "1" if aberta else "0"}, on_conflict="chave").execute()
+
 def limpar_cache():
     """Limpeza total — usar em importações (mudam orçado e operacional)."""
     try: st.cache_data.clear()
@@ -2277,6 +2301,94 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_j
         st.markdown(f"#### Justificativas · {MESES[mes]}/{ano}")
         secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda, ano)
 
+# ---------------------------------------------------------------- planejamento (orçamento pelo gestor)
+@fragment
+def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel):
+    idx = {int(r["conta_cod"]): r for r in plan_rows
+           if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None}
+    data = {"Conta": [f"{cod} · {desc}" for cod, desc in contas]}
+    for mi in range(1, 13):
+        data[MABREV[mi]] = [float((idx.get(cod, {}) or {}).get(f"m{mi}") or 0) for cod, _ in contas]
+    df = pd.DataFrame(data)
+    colcfg = {MABREV[mi]: st.column_config.NumberColumn(format="%.2f", step=0.01) for mi in range(1, 13)}
+    disabled = ["Conta"] + ([] if editavel else [MABREV[mi] for mi in range(1, 13)])
+    ed = st.data_editor(df, key=f"plan_{ano}_{uni_cod}_{cr_cod}", hide_index=True, use_container_width=True,
+                        num_rows="fixed", disabled=disabled, column_config=colcfg)
+    if not editavel:
+        return
+    st.caption("Preencha os 12 meses de cada conta. **Salvar rascunho** guarda sem enviar; **Enviar** manda para a controladoria (não editável até devolução).")
+    b = st.columns([1, 1.3, 3])
+    salvar = b[0].button("Salvar rascunho", key=f"plan_sv_{uni_cod}_{cr_cod}")
+    enviar = b[1].button("Enviar para controladoria", key=f"plan_en_{uni_cod}_{cr_cod}", type="primary")
+    if salvar or enviar:
+        for i, (cod, desc) in enumerate(contas):
+            row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
+                   "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", "")}
+            for mi in range(1, 13):
+                row[f"m{mi}"] = round(float(ed[MABREV[mi]].iloc[i] or 0), 2)
+            c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
+        novo = "ENVIADO" if enviar else "RASCUNHO"
+        c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": novo,
+                                           "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
+        limpar_cache()
+        st.success("Enviado à controladoria." if enviar else "Rascunho salvo.")
+        st.rerun()
+
+def tela_planejamento_gestor(c, prof, ano):
+    st.markdown(f"<div class='modtag'>Planejamento do Orçamento {ano}</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Preencha o orçamento por conta e mês nos seus centros de resultado. Salve rascunho e envie para a controladoria.</div>", unsafe_allow_html=True)
+    aberta = get_plan_janela(c, ano)
+    ref = carregar_orc(ano - 1) or carregar_orc(ano) or []
+    crs = sorted({(int(r["uni_cod"]), int(r["cr_cod"]), r.get("cr_nome", "")) for r in ref if r.get("cr_cod") is not None})
+    if not crs:
+        st.info(f"Não há estrutura de contas do ano {ano-1} nos seus centros de resultado para preencher.")
+        return
+    cr_opt = st.selectbox("Centro de resultado", crs, format_func=lambda x: f"{x[1]} · {x[2]}", key="plan_cr")
+    uni_cod, cr_cod, cr_nome = cr_opt
+    contas = sorted({(int(r["conta_cod"]), r.get("conta_desc", "")) for r in ref
+                     if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None})
+    plan_rows = carregar_orc_plan(ano)
+    stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s.get("status", "RASCUNHO") for s in carregar_orc_plan_status(ano)}
+    status = stt.get((uni_cod, cr_cod), "RASCUNHO")
+    cor = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}.get(status, CINZA_TXT)
+    st.markdown(f"Situação deste CR: {chip(status, cor)}", unsafe_allow_html=True)
+    if not aberta and status != "APROVADO":
+        st.info(f"A janela de preenchimento do orçamento {ano} está fechada. Você pode consultar, mas não editar.")
+    if status == "APROVADO":
+        st.success("Este centro de resultado já foi aprovado — em modo leitura.")
+    if status == "DEVOLVIDO":
+        st.warning("Devolvido pela controladoria para ajuste. Corrija e envie novamente.")
+    editavel = aberta and status not in ("APROVADO", "ENVIADO")
+    _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel)
+
+def tela_planejamento_ctrl(c, prof, ano):
+    st.markdown(f"<div class='modtag'>Planejamento do Orçamento {ano}</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Abra/feche a janela de preenchimento e acompanhe os envios dos gestores. Aprovação e consolidação vêm na próxima etapa.</div>", unsafe_allow_html=True)
+    aberta = get_plan_janela(c, ano)
+    jc = st.columns([3, 1.4])
+    jc[0].markdown(f"<div style='padding-top:8px'>Janela de preenchimento {ano}: "
+                   f"<b style='color:{VERDE if aberta else VERMELHO}'>{'ABERTA' if aberta else 'FECHADA'}</b></div>", unsafe_allow_html=True)
+    if jc[1].button(("🔒 Fechar janela" if aberta else "🔓 Abrir janela"), key="plan_toggle", use_container_width=True):
+        set_plan_janela(c, ano, not aberta); st.rerun()
+    st.caption("Com a janela aberta, os gestores preenchem e enviam. Você abre e fecha quando quiser.")
+    st.divider()
+    rows = carregar_orc_plan_status(ano)
+    if not rows:
+        st.info("Nenhum gestor iniciou o preenchimento ainda.")
+        return
+    ordem = {"ENVIADO": 0, "DEVOLVIDO": 1, "RASCUNHO": 2, "APROVADO": 3}
+    rows = sorted(rows, key=lambda s: (ordem.get(s.get("status", ""), 9), int(s.get("cr_cod", 0) or 0)))
+    corpo = ""
+    for s in rows:
+        stv = s.get("status", "RASCUNHO")
+        cor = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}.get(stv, CINZA_TXT)
+        corpo += (f"<tr><td style='text-align:left'>{s.get('cr_cod','')}</td>"
+                  f"<td style='text-align:left'>{chip(stv, cor)}</td>"
+                  f"<td style='text-align:left'>{s.get('atualizado_por','') or '—'}</td></tr>")
+    st.markdown(f"<table class='lle'><tr><th style='text-align:left'>CR</th>"
+                f"<th style='text-align:left'>Situação</th><th style='text-align:left'>Atualizado por</th></tr>{corpo}</table>",
+                unsafe_allow_html=True)
+
 # ---------------------------------------------------------------- main
 SECOES_CTRL = [
     ("Acompanhamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
@@ -2285,12 +2397,12 @@ SECOES_CTRL = [
     ("Lançamentos", [("receita", "💰 Receita de Vendas"), ("deducao", "➖ Deduções de Vendas"),
                      ("cmv", "🧾 CMV"), ("investimento", "🏗️ Investimentos"),
                      ("pessoal", "👥 Gastos com Pessoal")]),
-    ("Orçamento & Dados", [("manut", "✏️ Manutenção Orçamento"), ("importar", "⬆️ Importar dados")]),
+    ("Orçamento & Dados", [("plan", "🧭 Planejamento (orçamento)"), ("manut", "✏️ Manutenção Orçamento"), ("importar", "⬆️ Importar dados")]),
     ("Administração", [("admin", "🔑 Administração de acessos")]),
 ]
 SECOES_GESTOR = [
     ("Orçamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
-                   ("justif", "📝 Justificativas")]),
+                   ("justif", "📝 Justificativas"), ("plan", "🧭 Planejamento (orçamento)")]),
 ]
 
 def barra_lateral(prof, secoes):
@@ -2382,11 +2494,14 @@ def render_app(c, prof):
         elif nav == "investimento": tela_investimento(c, prof, ano)
         elif nav == "pessoal":    tela_headcount(c, prof, ano, mes)
         elif nav == "manut":      tela_editar_orcado(c, prof, df_orc, ano, mes)
+        elif nav == "plan":       tela_planejamento_ctrl(c, prof, ano)
         elif nav == "admin":      tela_admin(c, prof, ano)
         elif nav == "importar":   tela_importar(c, ano)
     else:
         if nav == "justif":
             tela_justif_gestor(c, prof, banda, df_orc, ano, mes)
+        elif nav == "plan":
+            tela_planejamento_gestor(c, prof, ano)
         else:
             tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_justif=False)
 
