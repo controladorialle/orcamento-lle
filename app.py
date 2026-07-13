@@ -2361,33 +2361,108 @@ def tela_planejamento_gestor(c, prof, ano):
     editavel = aberta and status not in ("APROVADO", "ENVIADO")
     _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel)
 
+def _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref):
+    """Grava o planejamento aprovado em orc_realizado[valor_planejado] (12 linhas por conta).
+       Preserva valor_realizado (não é enviado no payload)."""
+    EMP = {1: "PISA", 2: "KING"}
+    unidade = next((x.get("unidade", "") for x in ref if int(x.get("uni_cod", 0) or 0) == uni and x.get("unidade")), EMP.get(uni, str(uni)))
+    cr_grupo = next((x.get("cr_grupo", "") for x in ref if int(x.get("uni_cod", 0) or 0) == uni and int(x.get("cr_cod", 0) or 0) == cr), "")
+    meta = {int(x["conta_cod"]): {"tipo_conta": x.get("tipo_conta", ""), "classificacao": x.get("classificacao", "")}
+            for x in ref if x.get("conta_cod") is not None}
+    payloads = []
+    for r in plan_cr:
+        cod = int(r["conta_cod"]); m = meta.get(cod, {})
+        for mi in range(1, 13):
+            payloads.append(dict(ano=ano, mes=mi, uni_cod=uni, unidade=unidade, cr_cod=cr, cr_nome=cr_nome,
+                                 cr_grupo=cr_grupo, conta_cod=cod, conta_desc=r.get("conta_desc", ""),
+                                 tipo_conta=m.get("tipo_conta", ""), classificacao=m.get("classificacao", ""),
+                                 valor_planejado=round(float(r.get(f"m{mi}") or 0), 2)))
+    if payloads:
+        c.table("orc_realizado").upsert(payloads, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute()
+
 def tela_planejamento_ctrl(c, prof, ano):
     st.markdown(f"<div class='modtag'>Planejamento do Orçamento {ano}</div>", unsafe_allow_html=True)
-    st.markdown("<div class='modsub'>Abra/feche a janela de preenchimento e acompanhe os envios dos gestores. Aprovação e consolidação vêm na próxima etapa.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Abra/feche a janela, revise os envios dos gestores, aprove (consolida no orçado) ou devolva para ajuste.</div>", unsafe_allow_html=True)
     aberta = get_plan_janela(c, ano)
     jc = st.columns([3, 1.4])
     jc[0].markdown(f"<div style='padding-top:8px'>Janela de preenchimento {ano}: "
                    f"<b style='color:{VERDE if aberta else VERMELHO}'>{'ABERTA' if aberta else 'FECHADA'}</b></div>", unsafe_allow_html=True)
     if jc[1].button(("🔒 Fechar janela" if aberta else "🔓 Abrir janela"), key="plan_toggle", use_container_width=True):
         set_plan_janela(c, ano, not aberta); st.rerun()
-    st.caption("Com a janela aberta, os gestores preenchem e enviam. Você abre e fecha quando quiser.")
     st.divider()
-    rows = carregar_orc_plan_status(ano)
-    if not rows:
+
+    status_rows = carregar_orc_plan_status(ano)
+    if not status_rows:
         st.info("Nenhum gestor iniciou o preenchimento ainda.")
         return
+    stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s for s in status_rows}
+    corcls = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}
+
     ordem = {"ENVIADO": 0, "DEVOLVIDO": 1, "RASCUNHO": 2, "APROVADO": 3}
-    rows = sorted(rows, key=lambda s: (ordem.get(s.get("status", ""), 9), int(s.get("cr_cod", 0) or 0)))
-    corpo = ""
-    for s in rows:
-        stv = s.get("status", "RASCUNHO")
-        cor = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}.get(stv, CINZA_TXT)
-        corpo += (f"<tr><td style='text-align:left'>{s.get('cr_cod','')}</td>"
-                  f"<td style='text-align:left'>{chip(stv, cor)}</td>"
-                  f"<td style='text-align:left'>{s.get('atualizado_por','') or '—'}</td></tr>")
-    st.markdown(f"<table class='lle'><tr><th style='text-align:left'>CR</th>"
-                f"<th style='text-align:left'>Situação</th><th style='text-align:left'>Atualizado por</th></tr>{corpo}</table>",
+    opts = sorted(stt.keys(), key=lambda k: (ordem.get(stt[k].get("status", ""), 9), k[1]))
+    sel = st.selectbox("Centro de resultado", opts,
+                       format_func=lambda k: f"{k[1]} · {stt[k].get('status','')}", key="plan_rev_cr")
+    uni, cr = sel
+    srow = stt[sel]; status = srow.get("status", "RASCUNHO")
+    cr_nome = ""
+    plan_rows = carregar_orc_plan(ano)
+    plan_cr = [r for r in plan_rows if int(r.get("uni_cod", 0) or 0) == uni and int(r.get("cr_cod", 0) or 0) == cr]
+    if plan_cr: cr_nome = plan_cr[0].get("cr_nome", "")
+
+    st.markdown(f"Situação: {chip(status, corcls.get(status, CINZA_TXT))}"
+                + (f" &nbsp;·&nbsp; <span style='color:{CINZA_TXT}'>atualizado por {srow.get('atualizado_por','')}</span>" if srow.get('atualizado_por') else ""),
                 unsafe_allow_html=True)
+    if srow.get("comentario"):
+        st.caption(f"Comentário registrado: {srow.get('comentario')}")
+
+    # grade enviada (somente leitura) com total do ano
+    if not plan_cr:
+        st.info("Este CR ainda não tem valores lançados.")
+    else:
+        th = "<th style='text-align:left'>Conta</th>" + "".join(f"<th>{MABREV[m]}</th>" for m in range(1, 13)) + "<th>Total</th>"
+        corpo = ""
+        tot_geral = 0.0
+        for r in sorted(plan_cr, key=lambda x: int(x.get("conta_cod", 0) or 0)):
+            tot = sum(float(r.get(f"m{m}") or 0) for m in range(1, 13)); tot_geral += tot
+            corpo += (f"<tr><td style='text-align:left'>{int(r['conta_cod'])} · {r.get('conta_desc','')}</td>"
+                      + "".join(f"<td>{brl(float(r.get(f'm{m}') or 0))}</td>" for m in range(1, 13))
+                      + f"<td><b>{brl(tot)}</b></td></tr>")
+        corpo += (f"<tr class='mark'><td style='text-align:left'><b>Total do CR</b></td>"
+                  + "".join("<td></td>" for _ in range(1, 13)) + f"<td><b>{brl(tot_geral)}</b></td></tr>")
+        st.markdown(f"<div class='scroll'><table class='lle matrix'><tr>{th}</tr>{corpo}</table></div>", unsafe_allow_html=True)
+
+    # ações
+    ref = carregar_orc(ano - 1) or carregar_orc(ano) or []
+    orc_ano = carregar_orc(ano) or []
+    conflito = any(int(x.get("uni_cod", 0) or 0) == uni and int(x.get("cr_cod", 0) or 0) == cr
+                   and float(x.get("valor_planejado") or 0) != 0 for x in orc_ano)
+
+    st.divider()
+    if status == "APROVADO":
+        st.success("CR já aprovado e consolidado no orçado. Se precisar reabrir, use Devolver.")
+    ca = st.columns([1.4, 1.4, 3])
+    ok_over = True
+    if conflito and status != "APROVADO":
+        st.warning(f"Já existe orçado lançado para o CR {cr} em {ano}. Aprovar vai SOBRESCREVER o planejado (o realizado é preservado).")
+        ok_over = st.checkbox("Confirmo a sobrescrita", key=f"plan_over_{uni}_{cr}")
+    aprovar = ca[0].button("✅ Aprovar e consolidar", key=f"plan_apr_{uni}_{cr}",
+                           type="primary", disabled=(status == "APROVADO") or (conflito and not ok_over) or not plan_cr)
+    coment = ca[2].text_input("Comentário (para devolução)", key=f"plan_com_{uni}_{cr}")
+    devolver = ca[1].button("↩️ Devolver", key=f"plan_dev_{uni}_{cr}", disabled=not plan_cr)
+
+    if aprovar:
+        _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref)
+        c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni, "cr_cod": cr, "status": "APROVADO",
+                                           "comentario": "", "atualizado_por": prof.get("nome", "")},
+                                          on_conflict="ano,uni_cod,cr_cod").execute()
+        limpar_cache()
+        st.success(f"CR {cr} aprovado e consolidado no orçado de {ano}."); st.rerun()
+    if devolver:
+        c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni, "cr_cod": cr, "status": "DEVOLVIDO",
+                                           "comentario": coment, "atualizado_por": prof.get("nome", "")},
+                                          on_conflict="ano,uni_cod,cr_cod").execute()
+        limpar_cache()
+        st.success(f"CR {cr} devolvido para ajuste."); st.rerun()
 
 # ---------------------------------------------------------------- main
 SECOES_CTRL = [
