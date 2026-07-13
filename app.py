@@ -16,7 +16,7 @@ VERDE = "#0F8C3B"; VERMELHO = "#C0392B"; CINZA_TXT = "#6B7583"
 CINZA_BG = "#F5F7FA"; LINHA = "#E4E8F0"
 
 st.set_page_config(page_title="Sistema de Acompanhamento Orçamentário", page_icon="📊", layout="wide",
-                   initial_sidebar_state="collapsed")
+                   initial_sidebar_state="expanded")
 URL = st.secrets.get("SUPABASE_URL", ""); ANON = st.secrets.get("SUPABASE_ANON_KEY", "")
 
 # Fragmento: isola reruns da área editada (não recarrega o app inteiro a cada célula).
@@ -81,8 +81,26 @@ def inject_css():
       .lle-badge {{ color:#fff; font-size:12px; font-weight:600; background:rgba(255,255,255,.12);
         border:1px solid rgba(255,255,255,.22); border-radius:20px; padding:6px 14px; white-space:nowrap; }}
       .lle-badge span {{ color:{AMARELO}; }}
-      .modtag {{ font-size:15px; font-weight:700; color:{AZUL_PROFUNDO}; margin:2px 0 2px; }}
-      .modsub {{ font-size:12px; color:{CINZA_TXT}; margin:0 0 8px; }}
+      .modtag {{ font-size:18px; font-weight:700; color:{AZUL_PROFUNDO}; margin:2px 0 2px; }}
+      .modsub {{ font-size:13px; color:{CINZA_TXT}; margin:0 0 8px; }}
+
+      /* ----- barra lateral (navegação setorizada) ----- */
+      [data-testid="stSidebar"] {{ background:#fff; border-right:1px solid {LINHA}; }}
+      [data-testid="stSidebar"] .block-container {{ padding-top:1rem; }}
+      .side-logo {{ background:linear-gradient(135deg,{AZUL_PROFUNDO} 0%,{AZUL_CORP} 100%);
+        border-radius:12px; padding:14px 16px; display:flex; align-items:center; gap:12px;
+        margin-bottom:16px; box-shadow:0 3px 10px rgba(7,22,57,.18); }}
+      .side-logo-txt {{ color:#fff; font-weight:700; font-size:20px; letter-spacing:.5px; line-height:1; }}
+      .navsec {{ color:{CINZA_TXT}; font-size:11px; font-weight:700; letter-spacing:1.2px;
+        text-transform:uppercase; margin:16px 4px 6px; }}
+      [data-testid="stSidebar"] .stButton>button {{ justify-content:flex-start; text-align:left;
+        font-size:15px; font-weight:600; border:none; background:transparent; color:#1f2b45;
+        padding:9px 12px; border-radius:8px; box-shadow:none; }}
+      [data-testid="stSidebar"] .stButton>button:hover {{ background:{CINZA_BG}; color:{AZUL_PROFUNDO}; }}
+      [data-testid="stSidebar"] .stButton>button[kind="primary"] {{ background:{AZUL_CORP}; color:#fff; }}
+      [data-testid="stSidebar"] .stButton>button[kind="primary"]:hover {{ background:{AZUL_PROFUNDO}; }}
+      .side-user {{ font-size:14px; color:#1f2b45; margin:4px 4px; line-height:1.35; }}
+      .side-user span {{ color:{CINZA_TXT}; font-size:12px; }}
 
       /* tabs horizontais (barra navy + sublinhado dourado) */
       .stTabs [data-baseweb="tab-list"] {{ gap:2px; background:{AZUL_PROFUNDO}; padding:0 10px;
@@ -1970,6 +1988,58 @@ def backup_xlsx(c):
             pd.DataFrame({"info": ["sem dados"]}).to_excel(x, index=False, sheet_name="info")
     return buf.getvalue()
 
+def _diagnostico(ano):
+    """Verificações leves de integridade dos dados do ano. Retorna [(nome, ok, detalhe)]."""
+    def mabrev(m): return MESES[m][:3] if 0 < m < len(MESES) else str(m)
+    def meses_com(rows): return {int(r["mes"]) for r in (rows or []) if r.get("mes")}
+    def dups(rows, keys):
+        seen = {}
+        for r in (rows or []):
+            k = tuple(r.get(x) for x in keys); seen[k] = seen.get(k, 0) + 1
+        return sum(v - 1 for v in seen.values() if v > 1)
+    def negativos(rows):
+        n = 0
+        for r in (rows or []):
+            if float(r.get("valor_planejado") or 0) < 0 or float(r.get("valor_realizado") or 0) < 0:
+                n += 1
+        return n
+
+    orc = carregar_orc(ano) or []
+    rec = carregar_receita(ano) or []; ded = carregar_deducao(ano) or []
+    cmv = carregar_cmv(ano) or []; inv = carregar_investimento(ano) or []
+    mapa_keys = {int(x["conta_cod"]) for x in (carregar_dre_mapa() or []) if x.get("conta_cod") is not None}
+    achados = []
+
+    contas = {int(x["conta_cod"]) for x in orc if x.get("conta_cod") is not None}
+    nao_map = sorted(contas - mapa_keys)
+    achados.append(("Contas do orçamento sem classificação na DRE", not nao_map,
+                    "Todas classificadas." if not nao_map
+                    else f"{len(nao_map)} conta(s) para revisar (ex.: {', '.join(map(str, nao_map[:6]))}…)"))
+
+    real_so = sum(1 for x in orc if float(x.get("valor_realizado") or 0) > 0 and float(x.get("valor_planejado") or 0) == 0)
+    orc_sr = sum(1 for x in orc if float(x.get("valor_planejado") or 0) > 0 and float(x.get("valor_realizado") or 0) == 0)
+    achados.append(("Realizado sem orçamento correspondente", real_so == 0,
+                    "Nenhum." if real_so == 0 else f"{real_so} linha(s) com realizado e orçado zero."))
+    achados.append(("Orçado ainda sem realizado (normal p/ meses futuros)", True,
+                    f"{orc_sr} linha(s)."))
+
+    ativos = meses_com(orc)
+    for nome, rows in [("Receita", rec), ("Deduções", ded), ("CMV", cmv), ("Investimentos", inv)]:
+        faltam = sorted(ativos - meses_com(rows))
+        achados.append((f"{nome}: meses sem lançamento (dentre os meses com orçamento)", not faltam,
+                        "OK." if not faltam else f"faltam: {', '.join(mabrev(m) for m in faltam)}"))
+
+    neg = negativos(rec) + negativos(ded) + negativos(cmv) + negativos(inv) + negativos(orc)
+    achados.append(("Valores negativos nos lançamentos", neg == 0,
+                    "Nenhum." if neg == 0 else f"{neg} lançamento(s) com valor negativo."))
+
+    d = (dups(orc, ["ano", "mes", "uni_cod", "cr_cod", "conta_cod"]) + dups(rec, ["ano", "mes", "uni_cod"])
+         + dups(ded, ["ano", "mes", "uni_cod", "conta"]) + dups(cmv, ["ano", "mes", "uni_cod"])
+         + dups(inv, ["ano", "mes", "uni_cod"]))
+    achados.append(("Duplicidades de chave nos registros", d == 0,
+                    "Nenhuma." if d == 0 else f"{d} chave(s) repetida(s) — verifique reimportações."))
+    return achados
+
 def tela_admin(c, prof, ano):
     st.markdown("<div class='modtag'>Administração de acessos</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Substituição por desligamento, ativação e transferência de centros</div>", unsafe_allow_html=True)
@@ -1990,6 +2060,26 @@ def tela_admin(c, prof, ano):
                                   file_name=f"backup_orcamento_{st.session_state.get('_bk_ts','')}.xlsx",
                                   mime=XLSX_MIME, key="bk_dl")
             bc[2].caption(f"Backup gerado em {st.session_state.get('_bk_ts','')} — clique para baixar.")
+    st.divider()
+
+    with st.expander("🩺 Diagnóstico de dados"):
+        st.caption("Verifica a integridade dos dados do ano selecionado: contas sem classificação na DRE, lacunas "
+                   "orçado/realizado, meses faltando nos módulos, valores negativos e duplicidades de chave. Roda só quando você clica.")
+        if st.button("Rodar diagnóstico", key="diag_run"):
+            achados = _diagnostico(ano)
+            n_alerta = sum(1 for _, ok, _ in achados if not ok)
+            if n_alerta == 0:
+                st.success("Nenhum ponto de atenção encontrado — dados consistentes.")
+            else:
+                st.warning(f"{n_alerta} ponto(s) de atenção. Veja abaixo.")
+            corpo = ""
+            for nome, ok, det in achados:
+                ic = "✅" if ok else "⚠️"; cr = VERDE if ok else VERMELHO
+                corpo += (f"<tr><td style='text-align:left'>{ic} {nome}</td>"
+                          f"<td style='text-align:left;color:{cr}'>{det}</td></tr>")
+            st.markdown(f"<table class='lle'><tr><th style='text-align:left'>Verificação</th>"
+                        f"<th style='text-align:left'>Resultado</th></tr>{corpo}</table>", unsafe_allow_html=True)
+            st.caption(f"Diagnóstico do ano {ano}. A conferência entre o detalhe de notas e o realizado (mais pesada) pode ser adicionada sob demanda.")
     st.divider()
 
     gestores = c.table("gestor").select("codigo, nome, papel").order("nome").execute().data or []
@@ -2052,7 +2142,7 @@ def tela_admin(c, prof, ano):
             st.rerun()
 
 # ---------------------------------------------------------------- acompanhamento
-def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes):
+def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_justif=True):
     st.markdown("<div class='modtag'>Módulo Acompanhamento de Despesas — Orçado x Realizado</div>", unsafe_allow_html=True)
 
     if df_orc.empty:
@@ -2096,13 +2186,15 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes):
             if lab == "Desfavorável" and (int(v["uni_cod"]), int(v["cr_cod"]), int(v["conta_cod"])) not in enviadas:
                 pend += 1
         if pend:
-            st.warning(f"Você tem {pend} conta(s) a justificar em {MESES[mes]}/{ano} — veja a seção Justificativas ao final.")
+            st.warning(f"Você tem {pend} conta(s) a justificar em {MESES[mes]}/{ano} — acesse o menu Justificativas.")
         else:
             st.success(f"Nenhuma justificativa pendente em {MESES[mes]}/{ano}.")
 
     # ---------- submenu de seções (uma por vez -> menos rolagem, menos carga) ----------
-    secao = st.radio("Seção", ["📌 Resumo", "📈 Evolução mensal", "🔎 Desvios por CR", "📝 Justificativas"],
-                     horizontal=True, key="acomp_secao", label_visibility="collapsed")
+    secoes_int = ["📌 Resumo", "📈 Evolução mensal", "🔎 Desvios por CR"]
+    if mostrar_justif:
+        secoes_int.append("📝 Justificativas")
+    secao = st.radio("Seção", secoes_int, horizontal=True, key="acomp_secao", label_visibility="collapsed")
     st.divider()
 
     if secao.endswith("Resumo"):
@@ -2122,6 +2214,54 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes):
         secao_justificativas(c, prof, d_mes, mes, is_ctrl, banda, ano)
 
 # ---------------------------------------------------------------- main
+SECOES_CTRL = [
+    ("Acompanhamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
+                        ("justif", "📥 Justificativas recebidas")]),
+    ("Demonstrativos", [("dre", "📈 DRE")]),
+    ("Lançamentos", [("receita", "💰 Receita de Vendas"), ("deducao", "➖ Deduções de Vendas"),
+                     ("cmv", "🧾 CMV"), ("investimento", "🏗️ Investimentos"),
+                     ("pessoal", "👥 Gastos com Pessoal")]),
+    ("Orçamento & Dados", [("manut", "✏️ Manutenção Orçamento"), ("importar", "⬆️ Importar dados")]),
+    ("Administração", [("admin", "🔑 Administração de acessos")]),
+]
+SECOES_GESTOR = [
+    ("Orçamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
+                   ("justif", "📝 Justificativas")]),
+]
+
+def barra_lateral(prof, secoes):
+    """Menu lateral setorizado com a logo LLE. Retorna a chave da tela ativa."""
+    allowed = [k for _, itens in secoes for k, _ in itens]
+    if st.session_state.get("nav") not in allowed:
+        st.session_state["nav"] = allowed[0]
+    with st.sidebar:
+        st.markdown(f"<div class='side-logo'>{LOGO}<div class='side-logo-txt'>GRUPO LLE</div></div>",
+                    unsafe_allow_html=True)
+        for titulo, itens in secoes:
+            st.markdown(f"<div class='navsec'>{titulo}</div>", unsafe_allow_html=True)
+            for key, label in itens:
+                tipo = "primary" if st.session_state["nav"] == key else "secondary"
+                if st.button(label, key=f"nav_{key}", use_container_width=True, type=tipo):
+                    st.session_state["nav"] = key
+                    st.rerun()
+        papel = "Controladoria" if prof["papel"] == "controladoria" else "Gestor"
+        st.markdown("<div class='navsec'>Acesso</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='side-user'>👤 <b>{prof['nome']}</b><br><span>{papel}</span></div>",
+                    unsafe_allow_html=True)
+    return st.session_state["nav"]
+
+def tela_justif_gestor(c, prof, banda, df_orc, ano, mes):
+    st.markdown(f"<div class='modtag'>Justificativas · {MESES[mes]}/{ano}</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Responda as contas com desvio desfavorável do mês selecionado.</div>", unsafe_allow_html=True)
+    if df_orc.empty:
+        st.info("Nenhum dado carregado ainda. Fale com a controladoria.")
+        return
+    if mes < get_cobranca(c):
+        st.info(f"{MESES[mes]}/{ano} não está sujeito à cobrança de justificativa.")
+        return
+    d_mes = df_orc[df_orc["mes"] == mes]
+    secao_justificativas(c, prof, d_mes, mes, False, banda, ano)
+
 def render_app(c, prof):
     """Renderiza o app autenticado (cabeçalho, barra, abas/telas e rodapé)."""
     is_ctrl = prof["papel"] == "controladoria"
@@ -2156,26 +2296,26 @@ def render_app(c, prof):
     except Exception:
         cg = {}
 
+    secoes = SECOES_CTRL if is_ctrl else SECOES_GESTOR
+    nav = barra_lateral(prof, secoes)
+
     if is_ctrl:
-        NAV = ["💰 Receita de Vendas", "➖ Deduções de Vendas", "🧾 CMV", "📈 DRE",
-               "📊 Acompanhamento de Despesas", "📥 Justificativas recebidas",
-               "👥 Gestão de Gastos com Pessoal", "🏗️ Investimentos", "✏️ Manutenção Orçamento",
-               "🔑 Administração de acessos", "⬆️ Importar dados"]
-        aba = st.radio("Navegação", NAV, horizontal=True, key="nav_ctrl", label_visibility="collapsed")
-        st.markdown("<hr style='margin:.2rem 0 1rem; border:none; border-top:1px solid #E4E8F0'>", unsafe_allow_html=True)
-        if aba == NAV[0]:   tela_receita(c, prof, ano)
-        elif aba == NAV[1]: tela_deducao(c, prof, ano)
-        elif aba == NAV[2]: tela_cmv(c, prof, ano)
-        elif aba == NAV[3]: tela_dre(c, prof, ano)
-        elif aba == NAV[4]: tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
-        elif aba == NAV[5]: tela_painel(c, prof, banda, df_orc, cg, ano, mes)
-        elif aba == NAV[6]: tela_headcount(c, prof, ano, mes)
-        elif aba == NAV[7]: tela_investimento(c, prof, ano)
-        elif aba == NAV[8]: tela_editar_orcado(c, prof, df_orc, ano, mes)
-        elif aba == NAV[9]: tela_admin(c, prof, ano)
-        elif aba == NAV[10]: tela_importar(c, ano)
+        if nav == "acomp":        tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
+        elif nav == "justif":     tela_painel(c, prof, banda, df_orc, cg, ano, mes)
+        elif nav == "dre":        tela_dre(c, prof, ano)
+        elif nav == "receita":    tela_receita(c, prof, ano)
+        elif nav == "deducao":    tela_deducao(c, prof, ano)
+        elif nav == "cmv":        tela_cmv(c, prof, ano)
+        elif nav == "investimento": tela_investimento(c, prof, ano)
+        elif nav == "pessoal":    tela_headcount(c, prof, ano, mes)
+        elif nav == "manut":      tela_editar_orcado(c, prof, df_orc, ano, mes)
+        elif nav == "admin":      tela_admin(c, prof, ano)
+        elif nav == "importar":   tela_importar(c, ano)
     else:
-        tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
+        if nav == "justif":
+            tela_justif_gestor(c, prof, banda, df_orc, ano, mes)
+        else:
+            tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_justif=False)
 
     rodape()
 
