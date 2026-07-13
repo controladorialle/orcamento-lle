@@ -1288,7 +1288,7 @@ def tela_painel(c, prof, banda, df_orc, cg, ano, mes):
 # ---------------------------------------------------------------- edição manual do orçado
 # ---------------------------------------------------------------- edição do orçamento (fragmento isolado)
 @fragment
-def _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, c, prof):
+def _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, conta_sel, c, prof):
     view = view.sort_values(["uni_cod", "cr_cod", "conta_cod"]).reset_index(drop=True)
     keys = [(int(r.ano), int(r.mes), int(r.uni_cod), int(r.cr_cod), int(r.conta_cod)) for r in view.itertuples()]
     orig_o = [round(float(r.valor_planejado or 0), 2) for r in view.itertuples()]
@@ -1301,7 +1301,7 @@ def _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, c, prof):
     })
     st.caption(f"{len(disp)} conta(s) em {MESES[mes]}/{ano}. A edição roda isolada — o app não recarrega a cada célula. Edite **Orçado** e/ou **Realizado** e salve.")
     edited = st.data_editor(
-        disp, key=f"edo_grid_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
+        disp, key=f"edo_grid_{mes}_{uni_sel}_{cr_sel}_{conta_sel}", hide_index=True, use_container_width=True,
         num_rows="fixed", disabled=["Unidade", "Centro de resultado", "Conta"],
         column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
                        "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
@@ -1330,7 +1330,7 @@ def tela_editar_orcado(c, prof, df_orc, ano, mes):
         st.info("Base de orçado ainda não carregada. Importe na aba **Importar dados**.")
         return
 
-    fc = st.columns([1.4, 1.9])
+    fc = st.columns([1.2, 1.6, 1.9])
     unis = sorted({(int(r["uni_cod"]), r.get("unidade", "")) for _, r in df_orc.iterrows()})
     uni_sel = fc[0].selectbox("Unidade", [0] + [u[0] for u in unis],
                               format_func=lambda x: "Todas" if x == 0 else next((n for u, n in unis if u == x), str(x)), key="edo_uni")
@@ -1339,13 +1339,22 @@ def tela_editar_orcado(c, prof, df_orc, ano, mes):
     cr_sel = fc[1].selectbox("Centro de resultado", [0] + [x[0] for x in crs],
                              format_func=lambda x: "Todos" if x == 0 else f"{x} · {next((n for cc, n in crs if cc == x), '')}", key="edo_cr")
 
+    # contas disponíveis para os filtros de unidade/CR no mês (o seletor evita editar a linha errada)
+    base_ct = df_orc[df_orc["mes"] == mes]
+    if uni_sel: base_ct = base_ct[base_ct["uni_cod"] == uni_sel]
+    if cr_sel: base_ct = base_ct[base_ct["cr_cod"] == cr_sel]
+    contas_opt = sorted({(int(r["conta_cod"]), r.get("conta_desc", "")) for _, r in base_ct.iterrows()})
+    conta_sel = fc[2].selectbox("Conta", [0] + [x[0] for x in contas_opt],
+                                format_func=lambda x: "Todas" if x == 0 else f"{x} · {next((n for cc, n in contas_opt if cc == x), '')}", key="edo_conta")
+
     view = df_orc[df_orc["mes"] == mes]
     if uni_sel: view = view[view["uni_cod"] == uni_sel]
     if cr_sel: view = view[view["cr_cod"] == cr_sel]
+    if conta_sel: view = view[view["conta_cod"] == conta_sel]
     if view.empty:
         st.info("Nenhuma conta para os filtros selecionados.")
     else:
-        _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, c, prof)
+        _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, conta_sel, c, prof)
 
     # ---------- histórico de alterações ----------
     st.divider()
