@@ -25,7 +25,7 @@ fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment",
 
 MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 MABREV = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-STATUS_LABEL = {"PENDENTE": "Pendente", "JUSTIFICADO": "Justificado", "EM_REVISAO": "Em revisão", "DEVOLVIDO": "Devolvido", "APROVADO": "Aprovado"}
+STATUS_LABEL = {"PENDENTE": "Pendente", "JUSTIFICADO": "Justificado", "EM_REVISAO": "Em revisão", "DEVOLVIDO": "Devolvido", "APROVADO": "Aprovado", "ISENTA": "Isenta de justificativa"}
 CATEGORIAS = [("SALARIOS", "Salários e ordenados"), ("ENCARGOS", "Encargos"), ("BENEFICIOS", "Benefícios"), ("OUTROS", "Outros de pessoal")]
 CAT_LABEL = dict(CATEGORIAS)
 DEDUCOES = ["Devolução de Vendas", "COFINS", "ICMS", "ICMS - Bonificação", "ICMS - ST",
@@ -235,6 +235,21 @@ def get_janela(c):
 
 def set_janela(c, aberta):
     c.table("config").upsert({"chave": "justif_aberta", "valor": "1" if aberta else "0"}, on_conflict="chave").execute()
+
+def get_isentas(c):
+    """Códigos de conta isentos de justificativa (regra LLE: depreciação, contingências, impostos)."""
+    try:
+        r = c.table("config").select("valor").eq("chave", "justif_isentas").execute()
+        if not r.data:
+            return set()
+        return {int(x) for x in re.findall(r"\d+", str(r.data[0]["valor"] or ""))}
+    except Exception:
+        return set()
+
+def set_isentas(c, texto):
+    codigos = sorted({int(x) for x in re.findall(r"\d+", texto or "")})
+    c.table("config").upsert({"chave": "justif_isentas", "valor": ",".join(str(x) for x in codigos)}, on_conflict="chave").execute()
+    return codigos
 
 def ler_tudo(c, tabela, ano):
     """Le todas as linhas de uma tabela para o ano, paginando de 1000 em 1000."""
@@ -672,6 +687,7 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
         st.info(f"{MESES[mes]}/{ano} não está sujeito à cobrança de justificativa.")
         return
     js = carregar_justificativas(ano, mes)
+    isentas = get_isentas(c)
     jmap = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])): j for j in js}
     itens = []
     for _, v in df_mes.iterrows():
@@ -682,7 +698,7 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
         j = jmap.get((int(v["uni_cod"]), int(v["cr_cod"]), int(v["conta_cod"])), {"status": "PENDENTE", "texto": "", "comentario_controladoria": ""})
         itens.append((v, raw, pct, j))
     itens.sort(key=lambda t: t[1], reverse=True)
-    st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP}
+    st_cor = {"APROVADO": VERDE, "DEVOLVIDO": VERMELHO, "PENDENTE": CINZA_TXT, "JUSTIFICADO": AZUL_CORP, "EM_REVISAO": AZUL_CORP, "ISENTA": "#8A6D1F"}
 
     if not itens:
         st.success("Nenhum desvio desfavorável a justificar com os filtros atuais.")
@@ -691,13 +707,19 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
     # ----- filtro por situação (o gestor escolhe o que ver) -----
     GRUPOS = {"A responder": {"PENDENTE", "DEVOLVIDO"},
               "Aguardando controladoria": {"JUSTIFICADO", "EM_REVISAO"},
-              "Aprovadas": {"APROVADO"}}
-    def _st(it): return it[3].get("status", "PENDENTE")
+              "Aprovadas": {"APROVADO"},
+              "Isentas": {"ISENTA"}}
+    def _st(it):
+        if int(it[0]["conta_cod"]) in isentas: return "ISENTA"
+        return it[3].get("status", "PENDENTE")
     n_resp = sum(1 for it in itens if _st(it) in GRUPOS["A responder"])
     n_agu = sum(1 for it in itens if _st(it) in GRUPOS["Aguardando controladoria"])
     n_apr = sum(1 for it in itens if _st(it) in GRUPOS["Aprovadas"])
+    n_isen = sum(1 for it in itens if _st(it) == "ISENTA")
     opcoes = [f"Todas ({len(itens)})", f"A responder ({n_resp})",
               f"Aguardando controladoria ({n_agu})", f"Aprovadas ({n_apr})"]
+    if n_isen:
+        opcoes.append(f"Isentas ({n_isen})")
     escolha = st.radio("Situação", opcoes, horizontal=True, key=f"just_filtro_{mes}")
     alvo = escolha.split(" (")[0]
     vis = itens if alvo == "Todas" else [it for it in itens if _st(it) in GRUPOS[alvo]]
@@ -731,7 +753,9 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
     oper_all = pd.DataFrame(_op)
     for v, raw, pct, j in page_vis:
         status = j.get("status", "PENDENTE")
-        titulo = f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status)}]"
+        isenta = int(v["conta_cod"]) in isentas
+        status_disp = "ISENTA" if isenta else status
+        titulo = f"{v['conta_cod']} · {v.get('conta_desc','')} — {v.get('cr_nome','')} ({v.get('unidade','')}) · {brl(raw)} · [{STATUS_LABEL.get(status_disp, status_disp)}]"
         with st.expander(titulo):
             a, b, d = st.columns(3)
             a.metric("Orçado", brl(v["valor_planejado"])); b.metric("Realizado", brl(v["valor_realizado"])); d.metric("Variação", brl(raw), pct_txt(pct))
@@ -751,33 +775,50 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
             kb = f"{mes}_{v['uni_cod']}_{v['cr_cod']}_{v['conta_cod']}"
             if status == "DEVOLVIDO" and j.get("comentario_controladoria"):
                 st.warning(f"Controladoria: {j['comentario_controladoria']}")
-            pode_editar = (not is_ctrl) and status != "APROVADO"
-            if pode_editar:
-                if not get_janela(c):
-                    st.info(f"Justificativa: {j.get('texto') or '—'}")
-                    st.caption("🔒 Janela de justificativas fechada pela controladoria — não é possível enviar ou editar agora.")
-                else:
-                    txt = st.text_area("Justificativa", value=j.get("texto", "") or "", key=f"txt_{kb}")
-                    c1, c2 = st.columns(2)
-                    if c1.button("Salvar rascunho", key=f"sv_{kb}"):
-                        c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
-                    if c2.button("Enviar justificativa", key=f"en_{kb}", type="primary"):
-                        if not txt.strip(): st.error("Escreva a justificativa antes de enviar.")
-                        else:
-                            c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
+            if isenta:
+                st.markdown(f"{chip('Isenta de justificativa', '#8A6D1F')}", unsafe_allow_html=True)
+                st.caption("Conta isenta pela regra da LLE (ex.: depreciação, contingências, impostos) — não há cobrança de justificativa.")
+            else:
+                pode_editar = (not is_ctrl) and status != "APROVADO"
+                if pode_editar:
+                    if not get_janela(c):
+                        st.info(f"Justificativa: {j.get('texto') or '—'}")
+                        st.caption("🔒 Janela de justificativas fechada pela controladoria — não é possível enviar ou editar agora.")
+                    else:
+                        txt = st.text_area("Justificativa", value=j.get("texto", "") or "", key=f"txt_{kb}")
+                        c1, c2 = st.columns(2)
+                        if c1.button("Salvar rascunho", key=f"sv_{kb}"):
+                            ok = False
+                            try:
+                                c.table("justificativa").upsert({**key, "texto": txt, "status": "PENDENTE", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); ok = True
+                            except Exception:
+                                st.error("Não foi possível salvar. Se esta conta já foi enviada/aprovada, é permissão no banco — a controladoria precisa aplicar o ajuste de política de justificativa (RLS por status).")
+                            if ok:
+                                limpar_cache_justif(); st.rerun()
+                        if c2.button("Enviar justificativa", key=f"en_{kb}", type="primary"):
+                            if not txt.strip():
+                                st.error("Escreva a justificativa antes de enviar.")
+                            else:
+                                ok = False
+                                try:
+                                    c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); ok = True
+                                except Exception:
+                                    st.error("Não foi possível enviar. Se esta conta já foi enviada/aprovada, é permissão no banco — a controladoria precisa aplicar o ajuste de política de justificativa (RLS por status).")
+                                if ok:
+                                    limpar_cache_justif(); st.rerun()
+                        if status in ("JUSTIFICADO", "EM_REVISAO"):
+                            st.caption("Já enviada — você pode editar e reenviar enquanto a janela estiver aberta. Salvar rascunho volta para pendente.")
+                elif not is_ctrl:
+                    st.info(f"Justificativa: {j.get('texto') or '—'}"); st.caption("Justificativa aprovada — não editável.")
+                if is_ctrl:
+                    st.info(f"Justificativa do gestor: {j.get('texto') or '— (ainda não enviada)'}")
                     if status in ("JUSTIFICADO", "EM_REVISAO"):
-                        st.caption("Já enviada — você pode editar e reenviar enquanto a janela estiver aberta. Salvar rascunho volta para pendente.")
-            elif not is_ctrl:
-                st.info(f"Justificativa: {j.get('texto') or '—'}"); st.caption("Justificativa aprovada — não editável.")
-            if is_ctrl:
-                st.info(f"Justificativa do gestor: {j.get('texto') or '— (ainda não enviada)'}")
-                if status in ("JUSTIFICADO", "EM_REVISAO"):
-                    coment = st.text_input("Comentário (para devolução)", key=f"cm_{kb}")
-                    c1, c2 = st.columns(2)
-                    if c1.button("Aprovar", key=f"ap_{kb}", type="primary"):
-                        c.table("justificativa").update({"status": "APROVADO"}).match(key).execute(); limpar_cache_justif(); st.rerun()
-                    if c2.button("Devolver", key=f"dv_{kb}"):
-                        c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); limpar_cache_justif(); st.rerun()
+                        coment = st.text_input("Comentário (para devolução)", key=f"cm_{kb}")
+                        c1, c2 = st.columns(2)
+                        if c1.button("Aprovar", key=f"ap_{kb}", type="primary"):
+                            c.table("justificativa").update({"status": "APROVADO"}).match(key).execute(); limpar_cache_justif(); st.rerun()
+                        if c2.button("Devolver", key=f"dv_{kb}"):
+                            c.table("justificativa").update({"status": "DEVOLVIDO", "comentario_controladoria": coment}).match(key).execute(); limpar_cache_justif(); st.rerun()
 
 # ---------------------------------------------------------------- importar / config
 def modelo_hc_treasy_xlsx():
@@ -1230,6 +1271,7 @@ def tela_painel(c, prof, banda, df_orc, cg, ano, mes):
         return
 
     js = carregar_justificativas(ano, mes)
+    isentas = get_isentas(c)
 
     # ----- Pendências por empresa (mesma régua do gestor: por unidade + CR + conta) -----
     dfo = df_orc[df_orc["mes"] == mes] if not df_orc.empty else df_orc
@@ -1237,6 +1279,8 @@ def tela_painel(c, prof, banda, df_orc, cg, ano, mes):
     devolvidas = {(int(j["uni_cod"]), int(j["cr_cod"]), int(j["conta_cod"])) for j in js if j.get("status") == "DEVOLVIDO"}
     pend = {}
     for _, v in dfo.iterrows():
+        if int(v["conta_cod"]) in isentas:
+            continue
         raw, pct = var_de(v["valor_planejado"], v["valor_realizado"])
         lab, _ = classifica(raw, pct, v["conta_cod"], banda)
         if lab != "Desfavorável":
@@ -2178,6 +2222,25 @@ def tela_admin(c, prof, ano):
             st.markdown(f"<table class='lle'><tr><th style='text-align:left'>Verificação</th>"
                         f"<th style='text-align:left'>Resultado</th></tr>{corpo}</table>", unsafe_allow_html=True)
             st.caption(f"Diagnóstico do ano {ano}. A conferência entre o detalhe de notas e o realizado (mais pesada) pode ser adicionada sob demanda.")
+    st.divider()
+
+    with st.expander("🚫 Contas isentas de justificativa"):
+        st.caption("Contas que NÃO exigem justificativa (regra LLE — ex.: depreciação, contingências, impostos). "
+                   "Elas aparecem na tela de justificativas marcadas como 'Isenta' e não entram nas pendências. "
+                   "Informe os códigos separados por vírgula, espaço ou quebra de linha.")
+        atuais = sorted(get_isentas(c))
+        cat = {int(x["conta_cod"]): x.get("conta_desc", "") for x in (carregar_plano_contas() or []) if x.get("conta_cod") is not None}
+        if atuais:
+            corpo = "".join(f"<tr><td style='text-align:left'>{cod}</td><td style='text-align:left'>{cat.get(cod,'—')}</td></tr>" for cod in atuais)
+            st.markdown(f"<table class='lle'><tr><th style='text-align:left'>Conta isenta</th>"
+                        f"<th style='text-align:left'>Descrição</th></tr>{corpo}</table>", unsafe_allow_html=True)
+        else:
+            st.caption("Nenhuma conta isenta cadastrada ainda.")
+        txt = st.text_area("Códigos das contas isentas", value=", ".join(str(x) for x in atuais), key="isentas_txt", height=100)
+        if st.button("Salvar contas isentas", key="isentas_save"):
+            novos = set_isentas(c, txt)
+            limpar_cache_justif()
+            st.success(f"{len(novos)} conta(s) isenta(s) salva(s)."); st.rerun()
     st.divider()
 
     gestores = c.table("gestor").select("codigo, nome, papel").order("nome").execute().data or []
