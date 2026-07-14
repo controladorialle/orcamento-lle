@@ -751,7 +751,8 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
             kb = f"{mes}_{v['uni_cod']}_{v['cr_cod']}_{v['conta_cod']}"
             if status == "DEVOLVIDO" and j.get("comentario_controladoria"):
                 st.warning(f"Controladoria: {j['comentario_controladoria']}")
-            if not is_ctrl and status in ("PENDENTE", "DEVOLVIDO"):
+            pode_editar = (not is_ctrl) and status != "APROVADO"
+            if pode_editar:
                 if not get_janela(c):
                     st.info(f"Justificativa: {j.get('texto') or '—'}")
                     st.caption("🔒 Janela de justificativas fechada pela controladoria — não é possível enviar ou editar agora.")
@@ -764,8 +765,10 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
                         if not txt.strip(): st.error("Escreva a justificativa antes de enviar.")
                         else:
                             c.table("justificativa").upsert({**key, "texto": txt, "status": "JUSTIFICADO", "atualizado_por": prof["nome"]}, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute(); limpar_cache_justif(); st.rerun()
+                    if status in ("JUSTIFICADO", "EM_REVISAO"):
+                        st.caption("Já enviada — você pode editar e reenviar enquanto a janela estiver aberta. Salvar rascunho volta para pendente.")
             elif not is_ctrl:
-                st.info(f"Justificativa: {j.get('texto') or '—'}"); st.caption("Aguardando a controladoria — não editável.")
+                st.info(f"Justificativa: {j.get('texto') or '—'}"); st.caption("Justificativa aprovada — não editável.")
             if is_ctrl:
                 st.info(f"Justificativa do gestor: {j.get('texto') or '— (ainda não enviada)'}")
                 if status in ("JUSTIFICADO", "EM_REVISAO"):
