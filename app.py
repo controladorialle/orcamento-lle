@@ -416,6 +416,13 @@ def _q_orc_plan_status(tok, rtok, ano):
     except Exception: return []
 def carregar_orc_plan_status(ano): return _q_orc_plan_status(*_tok(), ano)
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _q_plano_contas(tok, rtok):
+    cc = _cli_tok(tok, rtok)
+    try: return cc.table("plano_contas").select("*").order("conta_cod").execute().data or []
+    except Exception: return []
+def carregar_plano_contas(): return _q_plano_contas(*_tok())
+
 def get_plan_janela(c, ano):
     """Janela de preenchimento do orçamento do ano-alvo aberta? (default: fechada)"""
     try:
@@ -2347,14 +2354,30 @@ def tela_planejamento_gestor(c, prof, ano):
     st.markdown("<div class='modsub'>Preencha o orçamento por conta e mês nos seus centros de resultado. Salve rascunho e envie para a controladoria.</div>", unsafe_allow_html=True)
     aberta = get_plan_janela(c, ano)
     ref = carregar_orc(ano - 1) or carregar_orc(ano) or []
-    crs = sorted({(int(r["uni_cod"]), int(r["cr_cod"]), r.get("cr_nome", "")) for r in ref if r.get("cr_cod") is not None})
+    EMP = {1: "PISA", 2: "KING"}
+    uni_nome = {int(r["uni_cod"]): (r.get("unidade") or "") for r in ref if r.get("uni_cod") is not None}
+    crmap = {}
+    for r in ref:
+        if r.get("cr_cod") is not None:
+            crmap[(int(r["uni_cod"]), int(r["cr_cod"]))] = r.get("cr_nome", "")
+    crs = sorted(crmap.keys())
     if not crs:
         st.info(f"Não há estrutura de contas do ano {ano-1} nos seus centros de resultado para preencher.")
         return
-    cr_opt = st.selectbox("1) Escolha o centro de resultado", crs, format_func=lambda x: f"{x[1]} · {x[2]}", key="plan_cr")
-    uni_cod, cr_cod, cr_nome = cr_opt
-    contas = sorted({(int(r["conta_cod"]), r.get("conta_desc", "")) for r in ref
-                     if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None})
+    def _fmt_cr(k):
+        emp = uni_nome.get(k[0]) or EMP.get(k[0], str(k[0]))
+        return f"{emp} · {k[1]} · {crmap[k]}"
+    cr_opt = st.selectbox("1) Escolha o centro de resultado", crs, format_func=_fmt_cr, key="plan_cr")
+    uni_cod, cr_cod = cr_opt
+    cr_nome = crmap[cr_opt]
+    # plano de contas COMPLETO (todas as contas já cadastradas) — permite orçar projeto novo
+    cat = carregar_plano_contas()
+    if cat:
+        contas_full = sorted({(int(x["conta_cod"]), x.get("conta_desc", "")) for x in cat
+                              if x.get("conta_cod") is not None and x.get("ativo", True)})
+    else:
+        contas_full = sorted({(int(r["conta_cod"]), r.get("conta_desc", "")) for r in ref
+                             if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None})
     plan_rows = carregar_orc_plan(ano)
     stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s.get("status", "RASCUNHO") for s in carregar_orc_plan_status(ano)}
     status = stt.get((uni_cod, cr_cod), "RASCUNHO")
@@ -2367,7 +2390,11 @@ def tela_planejamento_gestor(c, prof, ano):
     if status == "DEVOLVIDO":
         st.warning("Devolvido pela controladoria para ajuste. Corrija e envie novamente.")
     editavel = aberta and status not in ("APROVADO", "ENVIADO")
-    st.markdown("<div style='font-weight:600;color:" + AZUL_PROFUNDO + ";margin-top:6px'>2) Preencha os valores por mês e 3) envie</div>", unsafe_allow_html=True)
+    q = st.text_input("Filtrar conta (código ou nome) — opcional", key="plan_filtro")
+    contas = [(cod, desc) for cod, desc in contas_full if (not q) or q.lower() in f"{cod} {desc}".lower()]
+    st.markdown(f"<div style='font-weight:600;color:{AZUL_PROFUNDO};margin-top:6px'>2) Preencha os valores por mês e 3) envie</div>"
+                f"<div style='font-size:12px;color:{CINZA_TXT}'>Plano de contas completo — mostrando {len(contas)} de {len(contas_full)} contas. "
+                "Preencha só as que se aplicam (as demais ficam zeradas).</div>", unsafe_allow_html=True)
     _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel)
 
 def _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref):
@@ -2398,6 +2425,18 @@ def tela_planejamento_ctrl(c, prof, ano):
                    f"<b style='color:{VERDE if aberta else VERMELHO}'>{'ABERTA' if aberta else 'FECHADA'}</b></div>", unsafe_allow_html=True)
     if jc[1].button(("🔒 Fechar janela" if aberta else "🔓 Abrir janela"), key="plan_toggle", use_container_width=True):
         set_plan_janela(c, ano, not aberta); st.rerun()
+    if st.button("🔄 Sincronizar plano de contas", key="plan_sync"):
+        vistos = {}
+        for yr in (ano, ano - 1):
+            for x in (carregar_orc(yr) or []):
+                if x.get("conta_cod") is not None:
+                    vistos[int(x["conta_cod"])] = x.get("conta_desc", "")
+        if vistos:
+            c.table("plano_contas").upsert([{"conta_cod": k, "conta_desc": v} for k, v in vistos.items()],
+                                           on_conflict="conta_cod").execute()
+            limpar_cache(); st.success(f"{len(vistos)} conta(s) no catálogo."); st.rerun()
+        else:
+            st.info("Não há contas em orc_realizado para sincronizar.")
     st.divider()
 
     status_rows = carregar_orc_plan_status(ano)
