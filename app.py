@@ -2304,6 +2304,35 @@ def tela_admin(c, prof, ano):
             st.rerun()
 
 # ---------------------------------------------------------------- acompanhamento
+def aviso_estouros(d_mes, banda, mes, ano):
+    """Aviso no topo do Acompanhamento: contas que estouraram a faixa no mês (desfavoráveis)."""
+    estouros = []
+    for _, v in d_mes.iterrows():
+        raw, pct = var_de(v["valor_planejado"], v["valor_realizado"])
+        lab, _ = classifica(raw, pct, v["conta_cod"], banda)
+        if lab == "Desfavorável":
+            estouros.append((abs(raw), raw, pct, v))
+    if not estouros:
+        return
+    estouros.sort(key=lambda x: x[0], reverse=True)
+    total = sum(e[0] for e in estouros)
+    st.markdown(
+        f"<div style='background:#FDECEA;border-left:4px solid {VERMELHO};padding:10px 14px;border-radius:6px;margin-bottom:8px;'>"
+        f"<b style='color:{VERMELHO}'>⚠️ {len(estouros)} conta(s) estouraram a faixa em {MESES[mes]}/{ano}</b>"
+        f" &nbsp;·&nbsp; impacto desfavorável total: <b>{brl(total)}</b></div>", unsafe_allow_html=True)
+    th = ("<th style='text-align:left'>Conta</th><th style='text-align:left'>Centro de resultado</th>"
+          "<th>Variação (R$)</th><th>Variação (%)</th>")
+    def _linhas(lista):
+        return "".join(
+            f"<tr><td style='text-align:left'>{int(v['conta_cod'])} · {v.get('conta_desc','')}</td>"
+            f"<td style='text-align:left'>{v.get('cr_nome','')} ({v.get('unidade','')})</td>"
+            f"<td style='color:{VERMELHO}'>{brl(raw)}</td><td style='color:{VERMELHO}'>{pct_txt(pct)}</td></tr>"
+            for _, raw, pct, v in lista)
+    st.markdown(f"<div class='scroll'><table class='lle'><tr>{th}</tr>{_linhas(estouros[:5])}</table></div>", unsafe_allow_html=True)
+    if len(estouros) > 5:
+        with st.expander(f"Ver todas as {len(estouros)} contas estouradas"):
+            st.markdown(f"<div class='scroll'><table class='lle'><tr>{th}</tr>{_linhas(estouros)}</table></div>", unsafe_allow_html=True)
+
 def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_justif=True):
     st.markdown("<div class='modtag'>Módulo Acompanhamento de Despesas — Orçado x Realizado</div>", unsafe_allow_html=True)
 
@@ -2314,10 +2343,11 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_j
     if is_ctrl and cg:
         df["_resp"] = df.apply(lambda r: cg.get((int(r["uni_cod"]), int(r["cr_cod"])), ("—", ""))[0], axis=1)
 
+    tem_resp = is_ctrl and "_resp" in df.columns
     # ---------- filtros horizontais (o período vem do seletor global Ano/Mês) ----------
-    fcols = st.columns([1.5, 1.2, 1.7, 1.7] if is_ctrl else [1.2, 1.7, 1.7])
+    fcols = st.columns([1.5, 1.2, 1.7, 1.7] if tem_resp else [1.2, 1.7, 1.7])
     i = 0
-    if is_ctrl:
+    if tem_resp:
         resps = ["Todos"] + sorted([r for r in df["_resp"].dropna().unique().tolist() if r])
         f_resp = fcols[i].selectbox("Gestor", resps, key="acomp_gestor"); i += 1
         if f_resp != "Todos": df = df[df["_resp"] == f_resp]
@@ -2334,6 +2364,9 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_j
     # SEM consolidação: cada empresa (PISA/KING) vira uma linha própria por CR+conta
     d_mes = df[df["mes"] == mes]
     d_ytd = df[df["mes"] <= mes]
+
+    # aviso de contas estouradas no mês (informativo, no topo)
+    aviso_estouros(d_mes, banda, mes, ano)
 
     # aviso do gestor
     if not is_ctrl and mes < get_cobranca(c):
