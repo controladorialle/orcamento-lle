@@ -751,6 +751,7 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
     except Exception:
         _op = []
     oper_all = pd.DataFrame(_op)
+    janela_aberta = get_janela(c)  # uma consulta só (antes era 1 por item da página)
     for v, raw, pct, j in page_vis:
         status = j.get("status", "PENDENTE")
         isenta = int(v["conta_cod"]) in isentas
@@ -781,7 +782,7 @@ def secao_justificativas(c, prof, df_mes, mes, is_ctrl, banda, ano):
             else:
                 pode_editar = (not is_ctrl) and status != "APROVADO"
                 if pode_editar:
-                    if not get_janela(c):
+                    if not janela_aberta:
                         st.info(f"Justificativa: {j.get('texto') or '—'}")
                         st.caption("🔒 Janela de justificativas fechada pela controladoria — não é possível enviar ou editar agora.")
                     else:
