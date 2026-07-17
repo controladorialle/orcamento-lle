@@ -1624,7 +1624,9 @@ def tela_receita(c, prof, ano):
     else:
         g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
     tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
-    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+    mask_real = g["valor_realizado"] != 0
+    tp_real = float(g.loc[mask_real, "valor_planejado"].sum())
+    var = tr - tp_real; pct = (var / tp_real * 100) if tp_real else 0.0  # variação só sobre meses com realizado
 
     def cor_receita(v, pl):
         p = (v / pl * 100) if pl else 0.0
@@ -1634,12 +1636,13 @@ def tela_receita(c, prof, ano):
     # KPIs
     k = st.columns(4)
     kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
-           ("Variação (R$)", brl(var), cor_receita(var, tp)), ("Variação (%)", pct_txt(pct), cor_receita(var, tp))]
+           ("Variação (R$)", brl(var), cor_receita(var, tp_real)), ("Variação (%)", pct_txt(pct), cor_receita(var, tp_real))]
     for col, (t, v, cr) in zip(k, kpi):
         col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
                      f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
 
     # evolução mensal
+    st.caption(f"Variação calculada apenas sobre os meses com realizado (planejado desses meses: {brl(tp_real)}). Orçado cheio do ano: {brl(tp)}.")
     st.markdown("#### Evolução mensal")
     linhas = ""
     for m in range(1, 13):
@@ -1655,7 +1658,7 @@ def tela_receita(c, prof, ano):
             vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
         linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
                    f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
-    tcor = cor_receita(var, tp)
+    tcor = cor_receita(var, tp_real)
     total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
              f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
              f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
@@ -1685,7 +1688,9 @@ def tela_cmv(c, prof, ano):
     else:
         g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
     tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
-    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+    mask_real = g["valor_realizado"] != 0
+    tp_real = float(g.loc[mask_real, "valor_planejado"].sum())
+    var = tr - tp_real; pct = (var / tp_real * 100) if tp_real else 0.0  # variação só sobre meses com realizado
 
     def cor_cmv(v, pl):  # custo: gastar menos que o previsto (v<=0) é favorável
         p = (v / pl * 100) if pl else 0.0
@@ -1695,12 +1700,13 @@ def tela_cmv(c, prof, ano):
     # KPIs
     k = st.columns(4)
     kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
-           ("Variação (R$)", brl(var), cor_cmv(var, tp)), ("Variação (%)", pct_txt(pct), cor_cmv(var, tp))]
+           ("Variação (R$)", brl(var), cor_cmv(var, tp_real)), ("Variação (%)", pct_txt(pct), cor_cmv(var, tp_real))]
     for col, (t, v, cr) in zip(k, kpi):
         col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
                      f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
 
     # evolução mensal
+    st.caption(f"Variação calculada apenas sobre os meses com realizado (planejado desses meses: {brl(tp_real)}). Orçado cheio do ano: {brl(tp)}.")
     st.markdown("#### Evolução mensal")
     linhas = ""
     for m in range(1, 13):
@@ -1716,7 +1722,7 @@ def tela_cmv(c, prof, ano):
             vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
         linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
                    f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
-    tcor = cor_cmv(var, tp)
+    tcor = cor_cmv(var, tp_real)
     total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
              f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
              f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
@@ -1794,7 +1800,9 @@ def tela_deducao(c, prof, ano):
     else:
         g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
     tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
-    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+    mask_real = g["valor_realizado"] != 0
+    tp_real = float(g.loc[mask_real, "valor_planejado"].sum())
+    var = tr - tp_real; pct = (var / tp_real * 100) if tp_real else 0.0  # variação só sobre meses com realizado
 
     def cor_ded(v, pl):
         p = (v / pl * 100) if pl else 0.0
@@ -1804,12 +1812,13 @@ def tela_deducao(c, prof, ano):
     escopo_lbl = "todas as deduções" if conta == "Todas" else conta
     k = st.columns(4)
     kpi = [(f"Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
-           ("Variação (R$)", brl(var), cor_ded(var, tp)), ("Variação (%)", pct_txt(pct), cor_ded(var, tp))]
+           ("Variação (R$)", brl(var), cor_ded(var, tp_real)), ("Variação (%)", pct_txt(pct), cor_ded(var, tp_real))]
     for col, (t, v, cr) in zip(k, kpi):
         col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
                      f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
     st.caption(f"Exibindo: {escopo_lbl}.")
 
+    st.caption(f"Variação calculada apenas sobre os meses com realizado (planejado desses meses: {brl(tp_real)}). Orçado cheio do ano: {brl(tp)}.")
     st.markdown("#### Evolução mensal")
     linhas = ""
     for m in range(1, 13):
@@ -1825,7 +1834,7 @@ def tela_deducao(c, prof, ano):
             vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
         linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
                    f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
-    tcor = cor_ded(var, tp)
+    tcor = cor_ded(var, tp_real)
     total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
              f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
              f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
@@ -2229,7 +2238,9 @@ def tela_investimento(c, prof, ano):
     else:
         g = scope.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0.0)
     tp = float(g["valor_planejado"].sum()); tr = float(g["valor_realizado"].sum())
-    var = tr - tp; pct = (var / tp * 100) if tp else 0.0
+    mask_real = g["valor_realizado"] != 0
+    tp_real = float(g.loc[mask_real, "valor_planejado"].sum())
+    var = tr - tp_real; pct = (var / tp_real * 100) if tp_real else 0.0  # variação só sobre meses com realizado
 
     def cor_inv(v, pl):
         p = (v / pl * 100) if pl else 0.0
@@ -2238,11 +2249,12 @@ def tela_investimento(c, prof, ano):
 
     k = st.columns(4)
     kpi = [("Planejado (ano)", brl(tp), CINZA_TXT), ("Realizado (ano)", brl(tr), CINZA_TXT),
-           ("Variação (R$)", brl(var), cor_inv(var, tp)), ("Variação (%)", pct_txt(pct), cor_inv(var, tp))]
+           ("Variação (R$)", brl(var), cor_inv(var, tp_real)), ("Variação (%)", pct_txt(pct), cor_inv(var, tp_real))]
     for col, (t, v, cr) in zip(k, kpi):
         col.markdown(f"<div class='card' style='text-align:center'><div style='font-size:.8rem;color:{CINZA_TXT}'>{t}</div>"
                      f"<div style='font-size:1.4rem;font-weight:700;color:{cr}'>{v}</div></div>", unsafe_allow_html=True)
 
+    st.caption(f"Variação calculada apenas sobre os meses com realizado (planejado desses meses: {brl(tp_real)}). Orçado cheio do ano: {brl(tp)}.")
     st.markdown("#### Evolução mensal")
     linhas = ""
     for m in range(1, 13):
@@ -2258,7 +2270,7 @@ def tela_investimento(c, prof, ano):
             vr_txt = brl(vr); var_txt = brl(v); pctv = pct_txt(p); status = chip(lab, cr)
         linhas += (f"<tr><td style='text-align:left'>{MESES[m]}</td><td>{brl(vp)}</td><td>{vr_txt}</td>"
                    f"<td style='color:{cr}'>{var_txt}</td><td style='color:{cr}'>{pctv}</td><td>{status}</td></tr>")
-    tcor = cor_inv(var, tp)
+    tcor = cor_inv(var, tp_real)
     total = (f"<tr class='mark'><td style='text-align:left'><b>Total</b></td><td><b>{brl(tp)}</b></td>"
              f"<td><b>{brl(tr) if tr else '\u2014'}</b></td><td style='color:{tcor}'><b>{brl(var) if tr else '\u2014'}</b></td>"
              f"<td style='color:{tcor}'><b>{pct_txt(pct) if tr else '\u2014'}</b></td><td></td></tr>")
