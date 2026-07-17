@@ -1117,13 +1117,14 @@ def tela_headcount(c, prof, ano, mes, somente_leitura=False):
                 de = (f"{va:.0f}" if eh_qtd else brl(va)); para = (f"{vn:.0f}" if eh_qtd else brl(vn))
                 cat = CAT_LABEL.get(g.get("categoria") or "", "—") if not eh_qtd else "—"
                 linhas += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{g.get('alterado_por','') or '—'}</td>"
+                           f"<td style='text-align:center'>{int(g.get('ano') or 0)}</td>"
                            f"<td style='text-align:left'>{MESES[int(g.get('mes') or 1)]}</td>"
                            f"<td style='text-align:left'>{g.get('cargo_cod','')}</td>"
                            f"<td style='text-align:center'>{CAMPO_LAB.get(campo, campo)}</td>"
                            f"<td style='text-align:left'>{cat}</td>"
                            f"<td>{de}</td><td style='color:{seta}'>{para}</td></tr>")
             st.markdown(f"""<table class="lle"><tr>
-                <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+                <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:center'>Ano</th><th style='text-align:left'>Mês</th>
                 <th style='text-align:left'>Cargo</th><th style='text-align:center'>Campo</th>
                 <th style='text-align:left'>Categoria</th><th>De</th><th>Para</th></tr>{linhas}</table>""", unsafe_allow_html=True)
 
@@ -1521,11 +1522,12 @@ def tela_editar_orcado(c, prof, df_orc, ano, mes):
         seta = VERMELHO if vn > va else VERDE
         campo_lab = "Orçado" if g.get("campo") == "valor_planejado" else "Realizado"
         linhas += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{g.get('alterado_por','') or '—'}</td>"
+                   f"<td style='text-align:center'>{int(g.get('ano') or 0)}</td>"
                    f"<td style='text-align:left'>{MESES[int(g.get('mes') or 1)]}</td><td style='text-align:left'>{un or uni}</td>"
                    f"<td style='text-align:left'>{cr} · {crn}</td><td style='text-align:left'>{ct} · {cd}</td>"
                    f"<td style='text-align:center'>{campo_lab}</td><td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
     st.markdown(f"""<table class="lle"><tr>
-        <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+        <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:center'>Ano</th><th style='text-align:left'>Mês</th>
         <th style='text-align:left'>Unidade</th><th style='text-align:left'>Centro de resultado</th>
         <th style='text-align:left'>Conta</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{linhas}</table>""", unsafe_allow_html=True)
 
@@ -1593,12 +1595,13 @@ def _registro_mensal_frag(tabela, tabela_log, log_loader, dfr, emp, ano, c, prof
             va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
             seta = (VERMELHO if vn > va else VERDE) if custo else (VERDE if vn > va else VERMELHO)
             ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
+                   f"<td style='text-align:center'>{int(glog.get('ano') or 0)}</td>"
                    f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
                    f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
                    f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
                    f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
         st.markdown(f"""<table class="lle"><tr>
-            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:center'>Ano</th><th style='text-align:left'>Mês</th>
             <th style='text-align:center'>Empresa</th><th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- receita bruta de vendas
@@ -1848,13 +1851,14 @@ def tela_deducao(c, prof, ano):
             va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
             seta = VERMELHO if vn > va else VERDE
             ln += (f"<tr><td style='text-align:left'>{quando}</td><td style='text-align:left'>{glog.get('alterado_por','') or '\u2014'}</td>"
+                   f"<td style='text-align:center'>{int(glog.get('ano') or 0)}</td>"
                    f"<td style='text-align:left'>{MESES[int(glog.get('mes') or 1)]}</td>"
                    f"<td style='text-align:center'>{EMP.get(int(glog.get('uni_cod') or 0), glog.get('uni_cod'))}</td>"
                    f"<td style='text-align:left'>{glog.get('conta','') or '\u2014'}</td>"
                    f"<td style='text-align:center'>{CL.get(glog.get('campo'), glog.get('campo'))}</td>"
                    f"<td>{brl(va)}</td><td style='color:{seta}'>{brl(vn)}</td></tr>")
         st.markdown(f"""<table class="lle"><tr>
-            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:left'>Mês</th>
+            <th style='text-align:left'>Quando</th><th style='text-align:left'>Quem</th><th style='text-align:center'>Ano</th><th style='text-align:left'>Mês</th>
             <th style='text-align:center'>Empresa</th><th style='text-align:left'>Dedução</th>
             <th style='text-align:center'>Campo</th><th>De</th><th>Para</th></tr>{ln}</table>""", unsafe_allow_html=True)
 
@@ -3198,7 +3202,11 @@ def render_app(c, prof):
     # ----- seletor global de período -----
     # Ano vale para TODAS as telas. O Mês só é usado por Acompanhamento, Justificativas,
     # Pessoal e Manutenção — nas demais (DRE e telas anuais) ele seria inerte, então nem aparece.
-    ANOS = list(range(2020, 2033))  # histórico do Treasy desde 2020 + anos futuros
+    # Ano vale para TODAS as telas. Histórico desde 2020; o teto acompanha os anos
+    # habilitados para planejamento (hoje 2027) — nada além disso aparece até ser liberado.
+    anos_hab = get_plan_anos(c)
+    teto = max([2026] + list(anos_hab))
+    ANOS = list(range(2020, teto + 1))
     usa_mes = nav in ("acomp", "justif", "pessoal", "manut")
     if usa_mes:
         pc = st.columns([1.1, 1.4, 6])
