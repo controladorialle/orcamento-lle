@@ -1836,6 +1836,7 @@ def _mapa_dre_frag(contas, mapa, c, prof):
         else:
             st.info("Nenhuma alteração no mapeamento.")
 
+@fragment
 def tela_dre(c, prof, ano):
     EMP = {1: "PISA", 2: "KING"}
     banda = get_faixa(c)
@@ -2333,6 +2334,7 @@ def aviso_estouros(d_mes, banda, mes, ano):
         with st.expander(f"Ver todas as {len(estouros)} contas estouradas"):
             st.markdown(f"<div class='scroll'><table class='lle'><tr>{th}</tr>{_linhas(estouros)}</table></div>", unsafe_allow_html=True)
 
+@fragment
 def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_justif=True):
     st.markdown("<div class='modtag'>Módulo Acompanhamento de Despesas — Orçado x Realizado</div>", unsafe_allow_html=True)
 
