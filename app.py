@@ -3373,16 +3373,19 @@ SECOES_CTRL = [
     ("Acompanhamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
                         ("justif", "📥 Justificativas recebidas")]),
     ("Demonstrativos", [("dre", "📈 DRE")]),
-    ("Lançamentos", [("receita", "💰 Receita de Vendas"), ("deducao", "➖ Deduções de Vendas"),
-                     ("cmv", "🧾 CMV"), ("investimento", "🏗️ Investimentos"),
-                     ("pessoal", "👥 Gastos com Pessoal")]),
-    ("Orçamento & Dados", [("plan", "🧭 Planejamento (orçamento)"), ("qlp", "🧭 Planejamento de Pessoal (QLP)"), ("manut", "✏️ Manutenção Orçamento"), ("importar", "⬆️ Importar dados")]),
-    ("Administração", [("admin", "🔑 Administração de acessos")]),
+    ("Orçamento", [("receita", "💰 Receita de Vendas"), ("deducao", "➖ Deduções de Vendas"),
+                   ("cmv", "🧾 CMV"), ("investimento", "🏗️ Investimentos"),
+                   ("plan", "🧭 Planejamento (orçamento)"), ("manut", "✏️ Manutenção Orçamento")]),
+    ("Pessoal", [("pessoal", "👥 Gastos com Pessoal"),
+                 ("qlp", "🧭 Planejamento de Pessoal (QLP)")]),
+    ("Administração", [("importar", "⬆️ Importar dados"), ("admin", "🔑 Administração de acessos")]),
 ]
 SECOES_GESTOR = [
-    ("Orçamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
-                   ("justif", "📝 Justificativas"), ("plan", "🧭 Planejamento (orçamento)")]),
-    ("Pessoal", [("pessoal", "👥 Gastos com Pessoal (meu CR)"), ("qlp", "🧭 Planejamento de Pessoal (QLP)")]),
+    ("Acompanhamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
+                        ("justif", "📝 Justificativas")]),
+    ("Orçamento", [("plan", "🧭 Planejamento (orçamento)")]),
+    ("Pessoal", [("pessoal", "👥 Gastos com Pessoal (meu CR)"),
+                 ("qlp", "🧭 Planejamento de Pessoal (QLP)")]),
 ]
 
 def barra_lateral(prof, secoes):
