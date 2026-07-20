@@ -345,7 +345,13 @@ def carregar_operacional(ano, mes): return _q_oper_mes(*_tok(), ano, mes)
 @st.cache_data(ttl=120, show_spinner=False)
 def _q_justif_ano(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
-    return cc.table("justificativa").select("*").eq("ano", ano).execute().data or []
+    linhas, passo, ini = [], 1000, 0
+    while True:
+        lote = cc.table("justificativa").select("*").eq("ano", ano).range(ini, ini + passo - 1).execute().data or []
+        linhas.extend(lote)
+        if len(lote) < passo: break
+        ini += passo
+    return linhas
 def carregar_justificativas_ano(ano): return _q_justif_ano(*_tok(), ano)
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -459,8 +465,16 @@ def carregar_investimento_log(limite=200): return _q_investimento_log(*_tok(), l
 @st.cache_data(ttl=60, show_spinner=False)
 def _q_orc_plan(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
-    try: return cc.table("orc_plan").select("*").eq("ano", ano).execute().data or []
-    except Exception: return []
+    try:
+        linhas, passo, ini = [], 1000, 0
+        while True:
+            lote = cc.table("orc_plan").select("*").eq("ano", ano).range(ini, ini + passo - 1).execute().data or []
+            linhas.extend(lote)
+            if len(lote) < passo: break
+            ini += passo
+        return linhas
+    except Exception:
+        return []
 def carregar_orc_plan(ano): return _q_orc_plan(*_tok(), ano)
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -480,8 +494,16 @@ def carregar_plano_contas(): return _q_plano_contas(*_tok())
 @st.cache_data(ttl=60, show_spinner=False)
 def _q_qlp_plan(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
-    try: return cc.table("qlp_plan").select("*").eq("ano", ano).execute().data or []
-    except Exception: return []
+    try:
+        linhas, passo, ini = [], 1000, 0
+        while True:
+            lote = cc.table("qlp_plan").select("*").eq("ano", ano).range(ini, ini + passo - 1).execute().data or []
+            linhas.extend(lote)
+            if len(lote) < passo: break
+            ini += passo
+        return linhas
+    except Exception:
+        return []
 def carregar_qlp_plan(ano): return _q_qlp_plan(*_tok(), ano)
 
 @st.cache_data(ttl=60, show_spinner=False)
