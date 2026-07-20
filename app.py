@@ -1242,13 +1242,22 @@ def tela_importar(c, ano):
         # coluna do OUTRO tipo, que deve ser PRESERVADA (nunca zerada) neste import
         outro_v = "valor_orcado" if realizado else "valor_realizado"
         outro_q = "qtd_orcada" if realizado else "qtd_realizada"
-        # valores já existentes do outro tipo (para reenviar no upsert e não sobrescrever com default)
+        # valores já existentes do outro tipo (leitura DIRETA do banco, sem cache,
+        # para preservar a outra coluna sem regravar valores defasados)
         exist_v = {}
-        for x in (carregar_hc_custo(ano) or []):
+        try:
+            _cur = c.table("hc_custo").select("ano,mes,uni_cod,cr_cod,cargo_cod,categoria,valor_orcado,valor_realizado").eq("ano", ano).execute().data or []
+        except Exception:
+            _cur = []
+        for x in _cur:
             exist_v[(int(x.get("ano") or 0), int(x.get("mes") or 0), int(x.get("uni_cod") or 0),
                      int(x.get("cr_cod") or 0), str(x.get("cargo_cod")), x.get("categoria"))] = float(x.get(outro_v) or 0)
         exist_q = {}
-        for x in (carregar_hc_quadro(ano) or []):
+        try:
+            _curq = c.table("hc_quadro").select("ano,mes,uni_cod,cr_cod,cargo_cod,qtd_orcada,qtd_realizada").eq("ano", ano).execute().data or []
+        except Exception:
+            _curq = []
+        for x in _curq:
             exist_q[(int(x.get("ano") or 0), int(x.get("mes") or 0), int(x.get("uni_cod") or 0),
                      int(x.get("cr_cod") or 0), str(x.get("cargo_cod")))] = float(x.get(outro_q) or 0)
         quadro, custo, cargos = [], [], {}
