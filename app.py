@@ -3080,10 +3080,74 @@ def tela_qlp_ctrl(c, prof, ano):
     st.divider()
 
     status_rows = carregar_qlp_status(ano)
-    if not status_rows:
-        st.info("Nenhum gestor iniciou o preenchimento do QLP ainda.")
-        return
     stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s for s in status_rows}
+
+    # ---- painel: quais gestores/CRs ainda faltam enviar o QLP ----
+    vinc = carregar_cr_gestor()
+    _EMP = {1: "PISA", 2: "KING"}
+    universo = []
+    for r in vinc:
+        u = int(r.get("uni_cod", 0) or 0); crc = int(r.get("cr_cod", 0) or 0)
+        gn = (r.get("gestor") or {}).get("nome", "") if isinstance(r.get("gestor"), dict) else ""
+        universo.append((u, crc, r.get("cr_nome", ""), gn))
+    def _situ(u, crc):
+        return stt.get((u, crc), {}).get("status", "NÃO INICIADO")
+    ok_list = [x for x in universo if _situ(x[0], x[1]) in ("ENVIADO", "APROVADO")]
+    pend_list = [x for x in universo if _situ(x[0], x[1]) not in ("ENVIADO", "APROVADO")]
+    kc = st.columns(3)
+    kc[0].metric("CRs esperados", len(universo))
+    kc[1].metric("Enviados/aprovados", len(ok_list))
+    kc[2].metric("Faltam enviar", len(pend_list))
+    if universo and pend_list:
+        st.markdown(f"<div style='background:#FDECEA;border-left:4px solid {VERMELHO};padding:9px 13px;border-radius:6px;margin:4px 0 8px'>"
+                    f"<b style='color:{VERMELHO}'>{len(pend_list)} de {len(universo)} CR(s) ainda não enviaram o QLP {ano}.</b></div>", unsafe_allow_html=True)
+        ordp = {"DEVOLVIDO": 0, "RASCUNHO": 1, "NÃO INICIADO": 2}
+        linhas = ""
+        for u, crc, crn, gn in sorted(pend_list, key=lambda x: (ordp.get(_situ(x[0], x[1]), 9), x[1])):
+            s = _situ(u, crc); cs = "#EF9F27" if s == "RASCUNHO" else VERMELHO
+            linhas += (f"<tr><td style='text-align:left'>{gn or '—'}</td>"
+                       f"<td style='text-align:left'>{_EMP.get(u, u)} · {crc} · {crn}</td>"
+                       f"<td style='color:{cs}'>{s}</td></tr>")
+        st.markdown(f"<div class='scroll'><table class='lle'><tr><th style='text-align:left'>Gestor</th>"
+                    f"<th style='text-align:left'>Centro de resultado</th><th>Situação</th></tr>{linhas}</table></div>", unsafe_allow_html=True)
+    elif universo:
+        st.success(f"Todos os {len(universo)} CRs enviaram o QLP {ano}.")
+    else:
+        st.caption("Nenhum vínculo gestor↔CR cadastrado para comparar pendências.")
+
+    # ---- extrato do QLP (planilha para enviar ao RH avaliar/consolidar) ----
+    plan_all = carregar_qlp_plan(ano)
+    if plan_all:
+        try:
+            import io
+            EMP = {1: "PISA", 2: "KING"}
+            ref_u = {int(x["uni_cod"]): (x.get("unidade") or "") for x in (carregar_hc_quadro(ano) or []) + (carregar_hc_quadro(ano - 1) or []) if x.get("uni_cod") is not None}
+            regs = []
+            for r in sorted(plan_all, key=lambda x: (int(x.get("uni_cod", 0) or 0), int(x.get("cr_cod", 0) or 0), str(x.get("cargo_cod", "")))):
+                u = int(r.get("uni_cod", 0) or 0); crc = int(r.get("cr_cod", 0) or 0)
+                situ = stt.get((u, crc), {}).get("status", "")
+                meses_v = {MABREV[mi]: int(round(float(r.get(f"m{mi}") or 0))) for mi in range(1, 13)}
+                reg = {"Empresa": ref_u.get(u) or EMP.get(u, u), "CR (cód)": crc, "Centro de resultado": r.get("cr_nome", ""),
+                       "Cargo (cód)": r.get("cargo_cod", ""), "Cargo": r.get("cargo_nome", ""), "Situação": situ}
+                reg.update(meses_v)
+                reg["Pico do ano"] = max(meses_v.values()) if meses_v else 0
+                reg["Parecer RH"] = ""  # janela de preenchimento do RH
+                reg["Qtd consolidada (RH)"] = ""
+                regs.append(reg)
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as x:
+                pd.DataFrame(regs).to_excel(x, index=False, sheet_name=f"QLP {ano}")
+            st.download_button(f"📥 Baixar extrato do QLP {ano} (para o RH)", data=buf.getvalue(),
+                               file_name=f"QLP_{ano}_extrato_RH.xlsx", mime=XLSX_MIME, key="qlp_extrato_dl",
+                               help="Planilha com a projeção de headcount de todos os CRs, com colunas em branco para o RH avaliar e consolidar.")
+            st.caption("Extrato de todos os CRs (projeção do gestor por cargo/mês) com colunas em branco para o RH preencher a avaliação/consolidação.")
+        except Exception:
+            pass
+    st.divider()
+
+    if not status_rows:
+        st.info("Ainda não há envios do QLP para revisar.")
+        return
     corcls = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}
     ordem = {"ENVIADO": 0, "DEVOLVIDO": 1, "RASCUNHO": 2, "APROVADO": 3}
     opts = sorted(stt.keys(), key=lambda k: (ordem.get(stt[k].get("status", ""), 9), k[1]))
