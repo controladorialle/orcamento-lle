@@ -351,14 +351,30 @@ def carregar_justificativas_ano(ano): return _q_justif_ano(*_tok(), ano)
 @st.cache_data(ttl=300, show_spinner=False)
 def _q_hc_quadro(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
-    try: return cc.table("hc_quadro").select("*").eq("ano", ano).execute().data or []
-    except Exception: return []
+    try:
+        linhas, passo, ini = [], 1000, 0
+        while True:
+            lote = cc.table("hc_quadro").select("*").eq("ano", ano).range(ini, ini + passo - 1).execute().data or []
+            linhas.extend(lote)
+            if len(lote) < passo: break
+            ini += passo
+        return linhas
+    except Exception:
+        return []
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _q_hc_custo(tok, rtok, ano):
     cc = _cli_tok(tok, rtok)
-    try: return cc.table("hc_custo").select("*").eq("ano", ano).execute().data or []
-    except Exception: return []
+    try:
+        linhas, passo, ini = [], 1000, 0
+        while True:
+            lote = cc.table("hc_custo").select("*").eq("ano", ano).range(ini, ini + passo - 1).execute().data or []
+            linhas.extend(lote)
+            if len(lote) < passo: break
+            ini += passo
+        return linhas
+    except Exception:
+        return []
 
 def carregar_hc_quadro(ano): return _q_hc_quadro(*_tok(), ano)
 def carregar_hc_custo(ano): return _q_hc_custo(*_tok(), ano)
@@ -1246,7 +1262,12 @@ def tela_importar(c, ano):
         # para preservar a outra coluna sem regravar valores defasados)
         exist_v = {}
         try:
-            _cur = c.table("hc_custo").select("ano,mes,uni_cod,cr_cod,cargo_cod,categoria,valor_orcado,valor_realizado").eq("ano", ano).execute().data or []
+            _cur, _p, _i = [], 1000, 0
+            while True:
+                _lote = c.table("hc_custo").select("ano,mes,uni_cod,cr_cod,cargo_cod,categoria,valor_orcado,valor_realizado").eq("ano", ano).range(_i, _i + _p - 1).execute().data or []
+                _cur.extend(_lote)
+                if len(_lote) < _p: break
+                _i += _p
         except Exception:
             _cur = []
         for x in _cur:
@@ -1254,7 +1275,12 @@ def tela_importar(c, ano):
                      int(x.get("cr_cod") or 0), str(x.get("cargo_cod")), x.get("categoria"))] = float(x.get(outro_v) or 0)
         exist_q = {}
         try:
-            _curq = c.table("hc_quadro").select("ano,mes,uni_cod,cr_cod,cargo_cod,qtd_orcada,qtd_realizada").eq("ano", ano).execute().data or []
+            _curq, _p, _i = [], 1000, 0
+            while True:
+                _lote = c.table("hc_quadro").select("ano,mes,uni_cod,cr_cod,cargo_cod,qtd_orcada,qtd_realizada").eq("ano", ano).range(_i, _i + _p - 1).execute().data or []
+                _curq.extend(_lote)
+                if len(_lote) < _p: break
+                _i += _p
         except Exception:
             _curq = []
         for x in _curq:
