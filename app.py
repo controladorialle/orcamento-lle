@@ -31,9 +31,11 @@ CAT_LABEL = dict(CATEGORIAS)
 DEDUCOES = ["Devolução de Vendas", "COFINS", "ICMS", "ICMS - Bonificação", "ICMS - ST",
             "ICMS ST - Bonificação", "ICMS Subvenção", "IPI", "PIS"]
 DRE_GRUPOS = [("Receitas Financeiras", "rev"), ("Outras Receitas Não Operacionais", "rev"),
+              ("Despesas Variáveis", "cost"),
               ("Despesas Comerciais", "cost"), ("Despesas Administrativas", "cost"),
               ("Despesas Financeiras", "cost"), ("Outras Despesas Operacionais", "cost"),
               ("Impostos (IRPJ/CSLL)", "cost")]
+DRE_VAR_COST = ["Despesas Variáveis"]
 DRE_OP_COST = ["Despesas Comerciais", "Despesas Administrativas", "Outras Despesas Operacionais"]
 DRE_PRE_ADD = ["Receitas Financeiras", "Outras Receitas Não Operacionais"]
 DRE_PRE_SUB = ["Despesas Financeiras"]
@@ -1234,6 +1236,18 @@ def tela_importar(c, ano):
         realizado = tipo == "Realizado"
         qcol = "qtd_realizada" if realizado else "qtd_orcada"
         vcol = "valor_realizado" if realizado else "valor_orcado"
+        # coluna do OUTRO tipo, que deve ser PRESERVADA (nunca zerada) neste import
+        outro_v = "valor_orcado" if realizado else "valor_realizado"
+        outro_q = "qtd_orcada" if realizado else "qtd_realizada"
+        # valores já existentes do outro tipo (para reenviar no upsert e não sobrescrever com default)
+        exist_v = {}
+        for x in (carregar_hc_custo(ano) or []):
+            exist_v[(int(x.get("ano") or 0), int(x.get("mes") or 0), int(x.get("uni_cod") or 0),
+                     int(x.get("cr_cod") or 0), str(x.get("cargo_cod")), x.get("categoria"))] = float(x.get(outro_v) or 0)
+        exist_q = {}
+        for x in (carregar_hc_quadro(ano) or []):
+            exist_q[(int(x.get("ano") or 0), int(x.get("mes") or 0), int(x.get("uni_cod") or 0),
+                     int(x.get("cr_cod") or 0), str(x.get("cargo_cod")))] = float(x.get(outro_q) or 0)
         quadro, custo, cargos = [], [], {}
         for _, r in df.iterrows():
             uni = toint(cv(r, "CODIGO_UNIDADE_NEGOCIO")); cr = toint(cv(r, "CODIGO_CENTRO_RESULTADO"))
@@ -1245,10 +1259,12 @@ def tela_importar(c, ano):
             dim = dict(ano=an, mes=me, uni_cod=uni, unidade=str(cv(r, "DESCRICAO_UNIDADE_NEGOCIO") or ""),
                        cr_cod=cr, cr_nome=str(cv(r, "DESCRICAO_CENTRO_RESULTADO") or ""),
                        cargo_cod=cgo, cargo_nome=cargo_nome)
-            quadro.append({**dim, qcol: num(cv(r, "QUANTIDADE_FUNCIONARIOS"))})
+            quadro.append({**dim, qcol: num(cv(r, "QUANTIDADE_FUNCIONARIOS")),
+                           outro_q: exist_q.get((an, me, uni, cr, cgo), 0)})
             for cat, rubricas in HC_MAP.items():
                 total = sum(num(cv(r, rub)) for rub in rubricas)
-                custo.append({**dim, "categoria": cat, vcol: total})
+                custo.append({**dim, "categoria": cat, vcol: total,
+                              outro_v: exist_v.get((an, me, uni, cr, cgo, cat), 0)})
         salvar_cargos(cargos)
         for ch in chunks(quadro):
             c.table("hc_quadro").upsert(ch, on_conflict="ano,mes,uni_cod,cr_cod,cargo_cod").execute()
@@ -1983,6 +1999,7 @@ def tela_dre(c, prof, ano):
     gsum_span = {g: somar({m: grp_m[m][g] for m in range(1, 13)}, span) for g, _ in DRE_GRUPOS}
     nz = lambda d: any(abs(d[k]) > 0.005 for k in ("p", "r", "a"))
     op_incl = [g for g in DRE_OP_COST if nz(gsum_span[g])]
+    inc_var = nz(gsum_span["Despesas Variáveis"])
     inc_rf = nz(gsum_span["Receitas Financeiras"]); inc_onop = nz(gsum_span["Outras Receitas Não Operacionais"])
     inc_df = nz(gsum_span["Despesas Financeiras"]); tem_pre = inc_rf or inc_onop or inc_df
     inc_imp = nz(gsum_span[DRE_IMPOSTO])
@@ -1991,8 +2008,10 @@ def tela_dre(c, prof, ano):
         rec = somar(rec_m, meses); ded = somar(ded_m, meses); cmv = somar(cmv_m, meses); pes = somar(pes_m, meses)
         rl = dif(rec, ded); lb = dif(rl, cmv)
         gsum = {g: somar({m: grp_m[m][g] for m in range(1, 13)}, meses) for g, _ in DRE_GRUPOS}
+        var_sub = {k: sum(gsum[g][k] for g in DRE_VAR_COST) for k in ("p", "r", "a")}
+        mc = {k: lb[k] - var_sub[k] for k in ("p", "r", "a")}  # margem de contribuição
         op_sub = {k: sum(gsum[g][k] for g in DRE_OP_COST) for k in ("p", "r", "a")}
-        resop = {k: lb[k] - pes[k] - op_sub[k] for k in ("p", "r", "a")}
+        resop = {k: mc[k] - pes[k] - op_sub[k] for k in ("p", "r", "a")}
         pre_add = {k: sum(gsum[g][k] for g in DRE_PRE_ADD) for k in ("p", "r", "a")}
         pre_sub = {k: sum(gsum[g][k] for g in DRE_PRE_SUB) for k in ("p", "r", "a")}
         res_ai = {k: resop[k] + pre_add[k] - pre_sub[k] for k in ("p", "r", "a")}
@@ -2003,13 +2022,20 @@ def tela_dre(c, prof, ano):
              ("(−) CMV", cmv, "cost", False),
              ("(=) Lucro Bruto", lb, "rev", True),
              ("(−) Despesas com Pessoal", pes, "cost", False)]
+        if inc_var:
+            # Lucro Bruto = Margem de Contribuição Bruta; após as variáveis vem a Margem de Contribuição
+            L.insert(5, ("(−) Despesas Variáveis", gsum["Despesas Variáveis"], "cost", False))
+            L.insert(6, ("(=) Margem de Contribuição", mc, "rev", True))
         for g in op_incl:
             L.append((f"(−) {g}", gsum[g], "cost", False))
         L.append(("(=) Resultado Operacional", resop, "rev", True))
         if tem_pre:
             if inc_rf: L.append(("(+) Receitas Financeiras", gsum["Receitas Financeiras"], "rev", False))
-            if inc_onop: L.append(("(+) Outras Receitas Não Operacionais", gsum["Outras Receitas Não Operacionais"], "rev", False))
             if inc_df: L.append(("(−) Despesas Financeiras", gsum["Despesas Financeiras"], "cost", False))
+            if inc_rf or inc_df:
+                resfin = {k: gsum["Receitas Financeiras"][k] - gsum["Despesas Financeiras"][k] for k in ("p", "r", "a")}
+                L.append(("(=) Resultado Financeiro", resfin, "rev", True))
+            if inc_onop: L.append(("(+) Outras Receitas Não Operacionais", gsum["Outras Receitas Não Operacionais"], "rev", False))
             L.append(("(=) Resultado antes de Impostos", res_ai, "rev", True))
         if inc_imp:
             L.append(("(−) Impostos (IRPJ/CSLL)", imp, "cost", False))
@@ -2107,27 +2133,34 @@ def tela_dre(c, prof, ano):
                     gm[mm][g]["a"] += float(x.get("valor_realizado") or 0)
             return rec, ded, cmv, pes, gm
 
-        def montar_u(dd, meses, op_inc, tp, i_rf, i_onop, i_df, i_imp):
+        def montar_u(dd, meses, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var):
             rm, dm, cm, pm2, gmv = dd
             rec = somar(rm, meses); ded = somar(dm, meses); cmv = somar(cm, meses); pes = somar(pm2, meses)
             rl = dif(rec, ded); lb = dif(rl, cmv)
             gsum = {g: somar({mm: gmv[mm][g] for mm in range(1, 13)}, meses) for g, _ in DRE_GRUPOS}
+            var_sub = {k: sum(gsum[g][k] for g in DRE_VAR_COST) for k in ("p", "r", "a")}
+            mc = {k: lb[k] - var_sub[k] for k in ("p", "r", "a")}
             op_sub = {k: sum(gsum[g][k] for g in DRE_OP_COST) for k in ("p", "r", "a")}
-            resop = {k: lb[k] - pes[k] - op_sub[k] for k in ("p", "r", "a")}
+            resop = {k: mc[k] - pes[k] - op_sub[k] for k in ("p", "r", "a")}
             pre_add = {k: sum(gsum[g][k] for g in DRE_PRE_ADD) for k in ("p", "r", "a")}
             pre_sub = {k: sum(gsum[g][k] for g in DRE_PRE_SUB) for k in ("p", "r", "a")}
             res_ai = {k: resop[k] + pre_add[k] - pre_sub[k] for k in ("p", "r", "a")}
             imp = gsum[DRE_IMPOSTO]; res_liq = {k: res_ai[k] - imp[k] for k in ("p", "r", "a")}
             L = [("Receita Bruta de Vendas", rec), ("(−) Deduções de Vendas", ded),
-                 ("(=) Receita Líquida", rl), ("(−) CMV", cmv), ("(=) Lucro Bruto", lb),
-                 ("(−) Despesas com Pessoal", pes)]
+                 ("(=) Receita Líquida", rl), ("(−) CMV", cmv), ("(=) Lucro Bruto", lb)]
+            if i_var:
+                L.append(("(−) Despesas Variáveis", gsum["Despesas Variáveis"]))
+                L.append(("(=) Margem de Contribuição", mc))
+            L.append(("(−) Despesas com Pessoal", pes))
             for g in op_inc:
                 L.append((f"(−) {g}", gsum[g]))
             L.append(("(=) Resultado Operacional", resop))
             if tp:
                 if i_rf: L.append(("(+) Receitas Financeiras", gsum["Receitas Financeiras"]))
-                if i_onop: L.append(("(+) Outras Receitas Não Operacionais", gsum["Outras Receitas Não Operacionais"]))
                 if i_df: L.append(("(−) Despesas Financeiras", gsum["Despesas Financeiras"]))
+                if i_rf or i_df:
+                    L.append(("(=) Resultado Financeiro", {k: gsum["Receitas Financeiras"][k] - gsum["Despesas Financeiras"][k] for k in ("p", "r", "a")}))
+                if i_onop: L.append(("(+) Outras Receitas Não Operacionais", gsum["Outras Receitas Não Operacionais"]))
                 L.append(("(=) Resultado antes de Impostos", res_ai))
             if i_imp:
                 L.append(("(−) Impostos (IRPJ/CSLL)", imp))
@@ -2139,11 +2172,12 @@ def tela_dre(c, prof, ano):
         gall = dd_all[4]
         gsp = {g: somar({mm: gall[mm][g] for mm in range(1, 13)}, meses_u) for g, _ in DRE_GRUPOS}
         op_inc = [g for g in DRE_OP_COST if nz(gsp[g])]
+        i_var = nz(gsp["Despesas Variáveis"])
         i_rf = nz(gsp["Receitas Financeiras"]); i_onop = nz(gsp["Outras Receitas Não Operacionais"])
         i_df = nz(gsp["Despesas Financeiras"]); tp = i_rf or i_onop or i_df; i_imp = nz(gsp[DRE_IMPOSTO])
-        L_all = montar_u(dd_all, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp)
-        L_pisa = montar_u(dd_pisa, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp)
-        L_king = montar_u(dd_king, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp)
+        L_all = montar_u(dd_all, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var)
+        L_pisa = montar_u(dd_pisa, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var)
+        L_king = montar_u(dd_king, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var)
 
         med = st.radio("Medida", ["Realizado", "Planejado", f"Ano ant. ({ano-1})"], horizontal=True, key="dre_uni_medida")
         key_med = {"Realizado": "r", "Planejado": "p"}.get(med, "a")
@@ -2213,11 +2247,29 @@ def tela_dre(c, prof, ano):
         st.info("Nenhuma conta do orçamento mapeada ainda. Abra **Mapear contas do orçamento** abaixo para incluir despesas e receitas financeiras na DRE.")
 
     # ----- mapeamento de contas -----
-    contas = sorted({(int(x["conta_cod"]), str(x.get("conta_desc", ""))) for x in orc_cur if x.get("conta_cod") is not None})
+    # Uma linha por CÓDIGO de conta (o mapeamento é salvo por código). Se o mesmo
+    # código vier com descrições diferentes no orçamento, juntamos as descrições e
+    # avisamos — assim o código não aparece duplicado no seletor.
+    desc_por_cod = {}
+    for x in orc_cur:
+        cod = x.get("conta_cod")
+        if cod is None:
+            continue
+        cod = int(cod); d = str(x.get("conta_desc", "") or "").strip()
+        desc_por_cod.setdefault(cod, [])
+        if d and d not in desc_por_cod[cod]:
+            desc_por_cod[cod].append(d)
+    contas = sorted((cod, " / ".join(ds) if ds else "") for cod, ds in desc_por_cod.items())
+    colididos = {cod: ds for cod, ds in desc_por_cod.items() if len(ds) > 1}
     with st.expander("⚙️ Mapear contas do orçamento para a DRE"):
         if not contas:
             st.caption("Nenhuma conta de orçamento carregada para este ano.")
         else:
+            if colididos:
+                aviso = "; ".join(f"{cod} ({' / '.join(ds)})" for cod, ds in sorted(colididos.items()))
+                st.warning("Estes códigos aparecem no orçamento com **mais de uma descrição** — o sistema os trata "
+                           "como uma única conta (soma tudo sob o código). Se forem contas diferentes, corrija o "
+                           f"código na origem (ERP/plano de contas): {aviso}.")
             _mapa_dre_frag(contas, mapa, c, prof)
 
 # ---------------------------------------------------------------- investimentos
