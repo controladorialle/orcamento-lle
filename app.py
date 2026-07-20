@@ -1114,6 +1114,75 @@ def tela_headcount(c, prof, ano, mes, somente_leitura=False):
     # ---------- edição manual dos valores de pessoal (com log) — só controladoria ----------
     if not somente_leitura:
         st.divider()
+        with st.expander("💹 Aplicar dissídio / reajuste no Orçado", expanded=False):
+            if not tem_cat:
+                st.caption("A base de pessoal não tem categorias definidas; o reajuste por verba não está disponível.")
+            else:
+                st.caption("Aplica um percentual de reajuste sobre o **Orçado** (projeção) das verbas escolhidas, "
+                           "no período e empresa selecionados. Grava tudo no histórico automaticamente. **Não altera o Realizado.**")
+                cA, cB, cC = st.columns([1.1, 1, 1])
+                with cA:
+                    emp_r = st.radio("Empresa", ["PISA", "KING", "Ambas"], horizontal=True, key="rj_emp")
+                with cB:
+                    mi = st.selectbox("Mês inicial", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="rj_mi")
+                with cC:
+                    mf = st.selectbox("Mês final", list(range(1, 13)), index=11, format_func=lambda m: MESES[m], key="rj_mf")
+                cD, cE = st.columns([1, 2])
+                with cD:
+                    pct = st.number_input("Percentual (%)", value=5.0, step=0.5, format="%.2f", key="rj_pct")
+                with cE:
+                    labels_all = [lab for _, lab in CATEGORIAS]
+                    default_labs = [l for l in ("Salário", "Encargos", "Outros vencimentos") if l in labels_all]
+                    cats_lab = st.multiselect("Verbas (categorias)", labels_all, default=default_labs, key="rj_cats")
+                unis = {1} if emp_r == "PISA" else {2} if emp_r == "KING" else {1, 2}
+                cats_sel = [cod for cod, lab in CATEGORIAS if lab in cats_lab]
+                erro = "O mês inicial não pode ser maior que o mês final." if mi > mf else ("Selecione ao menos uma verba." if not cats_sel else None)
+                if erro:
+                    st.warning(erro)
+                else:
+                    kk = k.copy()
+                    kk["uni_cod"] = pd.to_numeric(kk["uni_cod"], errors="coerce")
+                    kk["mes"] = pd.to_numeric(kk["mes"], errors="coerce")
+                    kk["valor_orcado"] = pd.to_numeric(kk["valor_orcado"], errors="coerce").fillna(0.0)
+                    sel = kk[(kk["uni_cod"].isin(unis)) & (kk["mes"].between(mi, mf)) & (kk["categoria"].isin(cats_sel))]
+                    sel = sel[sel["valor_orcado"] != 0]
+                    tot_atual = float(sel["valor_orcado"].sum())
+                    tot_novo = tot_atual * (1 + pct / 100.0)
+                    p1, p2, p3 = st.columns(3)
+                    p1.metric("Orçado atual (recorte)", brl(tot_atual))
+                    p2.metric(f"Após {pct:.2f}%", brl(tot_novo))
+                    p3.metric("Δ", brl(tot_novo - tot_atual))
+                    st.caption(f"{len(sel)} linha(s) de custo serão reajustadas ({MESES[mi]}→{MESES[mf]}, {emp_r}). "
+                               f"O reajuste multiplica o valor atual — aplicar duas vezes acumula o efeito.")
+                    if st.button("Aplicar reajuste no Orçado", type="primary", key="rj_go", disabled=(len(sel) == 0 or pct == 0)):
+                        updates, logs = [], []
+                        fator = 1 + pct / 100.0
+                        nome_q = prof.get("nome", "")
+                        for _, r in sel.iterrows():
+                            antigo = round(float(r["valor_orcado"]), 2)
+                            novo = round(antigo * fator, 2)
+                            if novo == antigo: continue
+                            rlz_raw = pd.to_numeric(r.get("valor_realizado"), errors="coerce")
+                            rlz = round(float(rlz_raw), 2) if pd.notna(rlz_raw) else 0.0
+                            an = int(r.get("ano") or ano); me = int(r["mes"]); uni = int(r["uni_cod"])
+                            cr = int(r.get("cr_cod") or 0); cgo = str(r.get("cargo_cod")); cat = r["categoria"]
+                            updates.append(dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat,
+                                                valor_orcado=novo, valor_realizado=rlz,
+                                                unidade=str(r.get("unidade", "") or ""), cr_nome=str(r.get("cr_nome", "") or ""),
+                                                cargo_nome=str(r.get("cargo_nome", "") or "")))
+                            logs.append(dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat,
+                                             campo="valor_orcado", valor_antigo=antigo, valor_novo=novo, alterado_por=nome_q))
+                        try:
+                            for ch in chunks(updates):
+                                c.table("hc_custo").upsert(ch, on_conflict="ano,mes,uni_cod,cr_cod,cargo_cod,categoria").execute()
+                            for ch in chunks(logs):
+                                c.table("hc_log").insert(ch).execute()
+                            limpar_cache()
+                            st.success(f"Reajuste de {pct:.2f}% aplicado em {len(updates)} linha(s) do Orçado e registrado no histórico.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Não foi possível aplicar o reajuste: {e}")
+        st.divider()
         st.markdown("#### Editar valores de pessoal")
         if not cr_sel:
             st.caption("Selecione uma **Unidade** e um **Centro de resultado** acima para editar quantidades e custos deste recorte.")
