@@ -40,6 +40,9 @@ DRE_OP_COST = ["Despesas Comerciais", "Despesas Administrativas", "Outras Despes
 DRE_PRE_ADD = ["Receitas Financeiras", "Outras Receitas Não Operacionais"]
 DRE_PRE_SUB = ["Despesas Financeiras"]
 DRE_IMPOSTO = "Impostos (IRPJ/CSLL)"
+# Grupos de RECEITA vindos do orçamento: o razão guarda receita como crédito (negativo).
+# Na DRE invertemos o sinal para exibi-las positivas, como a Receita Bruta.
+DRE_REV = {g for g, t in DRE_GRUPOS if t == "rev"}
 DRE_LINHAS_OPC = [g for g, _ in DRE_GRUPOS]
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # Mapeamento das rubricas do template Treasy nas 4 categorias
@@ -1985,11 +1988,13 @@ def tela_dre(c, prof, ano):
     for x in orc_cur:
         m = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
         if 1 <= m <= 12 and g in grp_m[m] and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
-            grp_m[m][g]["p"] += float(x.get("valor_planejado") or 0); grp_m[m][g]["r"] += float(x.get("valor_realizado") or 0)
+            sg = -1.0 if g in DRE_REV else 1.0  # receita vem como crédito (negativo) -> inverte
+            grp_m[m][g]["p"] += sg * float(x.get("valor_planejado") or 0); grp_m[m][g]["r"] += sg * float(x.get("valor_realizado") or 0)
     for x in orc_prev:
         m = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
         if 1 <= m <= 12 and g in grp_m[m] and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
-            grp_m[m][g]["a"] += float(x.get("valor_realizado") or 0)
+            sg = -1.0 if g in DRE_REV else 1.0
+            grp_m[m][g]["a"] += sg * float(x.get("valor_realizado") or 0)
 
     dif = lambda a, b: {"p": a["p"] - b["p"], "r": a["r"] - b["r"], "a": a["a"] - b["a"]}
     somar = lambda md, meses: {k: sum(md[m][k] for m in meses) for k in ("p", "r", "a")}
@@ -2126,11 +2131,13 @@ def tela_dre(c, prof, ano):
             for x in orc_cur:
                 mm = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
                 if 1 <= mm <= 12 and g in gm[mm] and (not empf or int(x.get("uni_cod", 0) or 0) == empf):
-                    gm[mm][g]["p"] += float(x.get("valor_planejado") or 0); gm[mm][g]["r"] += float(x.get("valor_realizado") or 0)
+                    sg = -1.0 if g in DRE_REV else 1.0
+                    gm[mm][g]["p"] += sg * float(x.get("valor_planejado") or 0); gm[mm][g]["r"] += sg * float(x.get("valor_realizado") or 0)
             for x in orc_prev:
                 mm = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
                 if 1 <= mm <= 12 and g in gm[mm] and (not empf or int(x.get("uni_cod", 0) or 0) == empf):
-                    gm[mm][g]["a"] += float(x.get("valor_realizado") or 0)
+                    sg = -1.0 if g in DRE_REV else 1.0
+                    gm[mm][g]["a"] += sg * float(x.get("valor_realizado") or 0)
             return rec, ded, cmv, pes, gm
 
         def montar_u(dd, meses, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var):
