@@ -1223,6 +1223,8 @@ def tela_importar(c, ano):
 
     tipo = st.radio("Este arquivo é", ["Realizado", "Orçado"], horizontal=True, key="hc_tipo")
     fh = st.file_uploader("Planilha de pessoal (layout Treasy)", type=["xlsx"], key="fh")
+    mes_hc = st.number_input("Mês deste arquivo de pessoal", value=6, min_value=1, max_value=12, step=1, key="mes_hc",
+                             help="Usado quando a planilha não traz a coluna MES preenchida. Se a planilha tiver ANO/MES por linha, eles prevalecem.")
     if fh and st.button("Importar planilha de pessoal", key="imp_hc"):
         df = pd.read_excel(fh).dropna(how="all")
         cmap = {norm(col): col for col in df.columns}
@@ -1237,7 +1239,7 @@ def tela_importar(c, ano):
             uni = toint(cv(r, "CODIGO_UNIDADE_NEGOCIO")); cr = toint(cv(r, "CODIGO_CENTRO_RESULTADO"))
             cgo = cod_cargo(cv(r, "CODIGO_CARGO_FUNCIONARIO"))
             if uni is None or cr is None or not cgo: continue
-            an = toint(cv(r, "ANO")) or int(ano); me = toint(cv(r, "MES")) or 1
+            an = toint(cv(r, "ANO")) or int(ano); me = toint(cv(r, "MES")) or int(mes_hc)
             cargo_nome = str(cv(r, "DESCRICAO_CARGO_FUNCIONARIO") or "")
             cargos[cgo] = cargo_nome
             dim = dict(ano=an, mes=me, uni_cod=uni, unidade=str(cv(r, "DESCRICAO_UNIDADE_NEGOCIO") or ""),
