@@ -2106,7 +2106,7 @@ def tela_dre(c, prof, ano):
     de = f[1].selectbox("Mês inicial", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="dre_de")
     ate = f[2].selectbox("Mês final", list(range(1, 13)), index=11, format_func=lambda m: MESES[m], key="dre_ate")
     visao = f[3].radio("Visão", ["Mensal", "Acumulada"], horizontal=True, key="dre_visao")
-    formato = f[4].radio("Formato", ["Consolidado", "Por unidade", "Por mês"], horizontal=True, key="dre_formato")
+    formato = f[4].radio("Formato", ["Consolidado", "Por unidade", "Por mês", "Comparar períodos"], horizontal=True, key="dre_formato")
     if ate < de: ate = de
     meses_range = list(range(de, ate + 1))
     faixa = f"{MESES[de]}–{MESES[ate]}/{ano}" + (" (acumulado)" if visao == "Acumulada" else "")
@@ -2156,10 +2156,16 @@ def tela_dre(c, prof, ano):
     inc_df = nz(gsum_span["Despesas Financeiras"]); tem_pre = inc_rf or inc_onop or inc_df
     inc_imp = nz(gsum_span[DRE_IMPOSTO])
 
-    def montar(meses):
-        rec = somar(rec_m, meses); ded = somar(ded_m, meses); cmv = somar(cmv_m, meses); pes = somar(pes_m, meses)
+    def montar(meses, src=None, incl=None):
+        rm, dm, cm, pm_, gm = src if src else (rec_m, ded_m, cmv_m, pes_m, grp_m)
+        if incl is None:
+            _var, _op, _rf, _onop, _df, _pre, _imp = inc_var, op_incl, inc_rf, inc_onop, inc_df, tem_pre, inc_imp
+        else:
+            _var = incl["var"]; _op = incl["op"]; _rf = incl["rf"]; _onop = incl["onop"]
+            _df = incl["df"]; _pre = incl["pre"]; _imp = incl["imp"]
+        rec = somar(rm, meses); ded = somar(dm, meses); cmv = somar(cm, meses); pes = somar(pm_, meses)
         rl = dif(rec, ded); lb = dif(rl, cmv)
-        gsum = {g: somar({m: grp_m[m][g] for m in range(1, 13)}, meses) for g, _ in DRE_GRUPOS}
+        gsum = {g: somar({m: gm[m][g] for m in range(1, 13)}, meses) for g, _ in DRE_GRUPOS}
         var_sub = {k: sum(gsum[g][k] for g in DRE_VAR_COST) for k in ("p", "r", "a")}
         mc = {k: lb[k] - var_sub[k] for k in ("p", "r", "a")}  # margem de contribuição
         op_sub = {k: sum(gsum[g][k] for g in DRE_OP_COST) for k in ("p", "r", "a")}
@@ -2174,22 +2180,22 @@ def tela_dre(c, prof, ano):
              ("(−) CMV", cmv, "cost", False),
              ("(=) Lucro Bruto", lb, "rev", True),
              ("(−) Despesas com Pessoal", pes, "cost", False)]
-        if inc_var:
+        if _var:
             # Lucro Bruto = Margem de Contribuição Bruta; após as variáveis vem a Margem de Contribuição
             L.insert(5, ("(−) Despesas Variáveis", gsum["Despesas Variáveis"], "cost", False))
             L.insert(6, ("(=) Margem de Contribuição", mc, "rev", True))
-        for g in op_incl:
+        for g in _op:
             L.append((f"(−) {g}", gsum[g], "cost", False))
         L.append(("(=) Resultado Operacional", resop, "rev", True))
-        if tem_pre:
-            if inc_rf: L.append(("(+) Receitas Financeiras", gsum["Receitas Financeiras"], "rev", False))
-            if inc_df: L.append(("(−) Despesas Financeiras", gsum["Despesas Financeiras"], "cost", False))
-            if inc_rf or inc_df:
+        if _pre:
+            if _rf: L.append(("(+) Receitas Financeiras", gsum["Receitas Financeiras"], "rev", False))
+            if _df: L.append(("(−) Despesas Financeiras", gsum["Despesas Financeiras"], "cost", False))
+            if _rf or _df:
                 resfin = {k: gsum["Receitas Financeiras"][k] - gsum["Despesas Financeiras"][k] for k in ("p", "r", "a")}
                 L.append(("(=) Resultado Financeiro", resfin, "rev", True))
-            if inc_onop: L.append(("(+) Outras Receitas Não Operacionais", gsum["Outras Receitas Não Operacionais"], "rev", False))
+            if _onop: L.append(("(+) Outras Receitas Não Operacionais", gsum["Outras Receitas Não Operacionais"], "rev", False))
             L.append(("(=) Resultado antes de Impostos", res_ai, "rev", True))
-        if inc_imp:
+        if _imp:
             L.append(("(−) Impostos (IRPJ/CSLL)", imp, "cost", False))
             L.append(("(=) Resultado Líquido", res_liq, "rev", True))
         return L
@@ -2361,8 +2367,12 @@ def tela_dre(c, prof, ano):
             pass
 
     # ================= POR MÊS (matriz, como no Treasy) =================
-    else:
+    elif formato == "Por mês":
         medida = st.radio("Valores por mês", ["Realizado", "Planejado", "Ambos"], horizontal=True, key="dre_medida")
+        avc = st.columns([1, 1, 6])
+        col_av = avc[0].checkbox("AV %", False, key="dm_av", help="Análise Vertical: linha ÷ Receita Líquida realizada da mesma coluna.")
+        col_ah = avc[1].checkbox("AH %", False, key="dm_ah", help="Análise Horizontal: realizado do período vs mesmo período do ano anterior.")
+        kk = "p" if medida == "Planejado" else "r"
         skel = montar(meses_range)  # nomes/estrutura de referência
         # valores de cada coluna-mês
         col_vals = {}
@@ -2370,34 +2380,166 @@ def tela_dre(c, prof, ano):
             col_vals[m] = montar([m]) if visao == "Mensal" else montar(list(range(1, m + 1)))
         total_meses = meses_range if visao == "Mensal" else list(range(1, ate + 1))
         total_vals = montar(total_meses)
+        # AV/AH são calculados sempre sobre o REALIZADO (padrão DRE)
+        def _rl_r(vals):
+            return next((d["r"] for n, d, t, f in vals if n == "(=) Receita Líquida"), 0.0)
+        base_col = {m: _rl_r(col_vals[m]) for m in meses_range}
+        base_tot = _rl_r(total_vals)
 
-        def cel(dic, key):
-            return brl(dic[key])
-        # cabeçalho
-        if medida == "Ambos":
-            sub = "".join(f"<th>{MABREV[m]} Plan</th><th>{MABREV[m]} Real</th>" for m in meses_range) + "<th>Total Plan</th><th>Total Real</th>"
-        else:
-            kk = "p" if medida == "Planejado" else "r"
-            sub = "".join(f"<th>{MABREV[m]}</th>" for m in meses_range) + "<th>Total</th>"
+        def head_mes(lbl):
+            h = (f"<th>{lbl} Plan</th><th>{lbl} Real</th>" if medida == "Ambos" else f"<th>{lbl}</th>")
+            if col_av: h += f"<th>{lbl} AV%</th>"
+            if col_ah: h += f"<th>{lbl} AH%</th>"
+            return h
+        sub = "".join(head_mes(MABREV[m]) for m in meses_range) + head_mes("Total")
         th = f"<th style='text-align:left'>Linha</th>{sub}"
+
+        def cells(vi, base, b0, b1):
+            r = vi["r"]; a = vi["a"]
+            if medida == "Ambos":
+                cc = f"<td>{b0}{brl(vi['p'])}{b1}</td><td>{b0}{brl(vi['r'])}{b1}</td>"
+            else:
+                cc = f"<td>{b0}{brl(vi[kk])}{b1}</td>"
+            if col_av:
+                cc += f"<td>{b0}{pct_txt((r / base * 100) if base else 0.0)}{b1}</td>"
+            if col_ah:
+                cc += f"<td>{b0}{(pct_txt((r - a) / a * 100) if a else '—')}{b1}</td>"
+            return cc
+
         corpo = ""
         for i, (nome, d0, tipo, forte) in enumerate(skel):
             b0, b1 = ("<b>", "</b>") if forte else ("", "")
             tds = f"<td style='text-align:left'>{b0}{nome}{b1}</td>"
-            if medida == "Ambos":
-                for m in meses_range:
-                    dv = col_vals[m][i][1]
-                    tds += f"<td>{b0}{cel(dv,'p')}{b1}</td><td>{b0}{cel(dv,'r')}{b1}</td>"
-                tds += f"<td>{b0}{cel(total_vals[i][1],'p')}{b1}</td><td>{b0}{cel(total_vals[i][1],'r')}{b1}</td>"
-            else:
-                for m in meses_range:
-                    tds += f"<td>{b0}{cel(col_vals[m][i][1], kk)}{b1}</td>"
-                tds += f"<td>{b0}{cel(total_vals[i][1], kk)}{b1}</td>"
+            for m in meses_range:
+                tds += cells(col_vals[m][i][1], base_col[m], b0, b1)
+            tds += cells(total_vals[i][1], base_tot, b0, b1)
             cls = " class='mark'" if forte else ""
             corpo += f"<tr{cls}>{tds}</tr>"
         st.markdown(f"""<div class='scroll'><table class="lle matrix"><tr>{th}</tr>{corpo}</table></div>""", unsafe_allow_html=True)
 
-    if not any(nz(gsum_span[g]) for g, _ in DRE_GRUPOS):
+    # ================= COMPARAR PERÍODOS (realizado de dois períodos quaisquer) =================
+    else:
+        st.caption("Compare o **realizado** de dois períodos quaisquer (inclusive anos diferentes). Cada lado pode ser um "
+                   "único mês (mês inicial = final) ou um intervalo. AV% = participação sobre a Receita Líquida do próprio "
+                   "período; AH% = variação vs o mesmo período do ano anterior. Var = período B − período A.")
+        anos_cmp = list(range(2020, max(ano, 2026) + 1))
+        idx_ant = anos_cmp.index(ano - 1) if (ano - 1) in anos_cmp else 0
+        idx_atual = anos_cmp.index(ano) if ano in anos_cmp else len(anos_cmp) - 1
+        st.markdown(f"<div style='font-weight:600;color:{AZUL_PROFUNDO}'>Período A</div>", unsafe_allow_html=True)
+        ca = st.columns([1, 1, 1])
+        ano_a = int(ca[0].selectbox("Ano (A)", anos_cmp, index=idx_ant, key="cmp_ano_a"))
+        de_a = ca[1].selectbox("Mês inicial (A)", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="cmp_de_a")
+        ate_a = ca[2].selectbox("Mês final (A)", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="cmp_ate_a")
+        st.markdown(f"<div style='font-weight:600;color:{AZUL_PROFUNDO};margin-top:4px'>Período B</div>", unsafe_allow_html=True)
+        cb = st.columns([1, 1, 1])
+        ano_b = int(cb[0].selectbox("Ano (B)", anos_cmp, index=idx_atual, key="cmp_ano_b"))
+        de_b = cb[1].selectbox("Mês inicial (B)", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="cmp_de_b")
+        ate_b = cb[2].selectbox("Mês final (B)", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="cmp_ate_b")
+        if ate_a < de_a: ate_a = de_a
+        if ate_b < de_b: ate_b = de_b
+        meses_a = list(range(de_a, ate_a + 1)); meses_b = list(range(de_b, ate_b + 1))
+
+        # agregador por ano arbitrário: r = realizado do ano, a = realizado do ano-1, p = planejado do ano
+        def _agrega_ano(yr):
+            def pm(loader, kp, kr):
+                cur = loader(yr) or []; prev = loader(yr - 1) or []
+                dd = {mm: {"p": 0.0, "r": 0.0, "a": 0.0} for mm in range(1, 13)}
+                for x in cur:
+                    mm = int(x.get("mes", 0) or 0)
+                    if 1 <= mm <= 12 and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
+                        dd[mm]["p"] += float(x.get(kp) or 0); dd[mm]["r"] += float(x.get(kr) or 0)
+                for x in prev:
+                    mm = int(x.get("mes", 0) or 0)
+                    if 1 <= mm <= 12 and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
+                        dd[mm]["a"] += float(x.get(kr) or 0)
+                return dd
+            rec = pm(carregar_receita, "valor_planejado", "valor_realizado")
+            ded = pm(carregar_deducao, "valor_planejado", "valor_realizado")
+            cmv = pm(carregar_cmv, "valor_planejado", "valor_realizado")
+            pes = pm(carregar_hc_custo, "valor_orcado", "valor_realizado")
+            oc = carregar_orc(yr) or []; op = carregar_orc(yr - 1) or []
+            gm = {mm: {g: {"p": 0.0, "r": 0.0, "a": 0.0} for g, _ in DRE_GRUPOS} for mm in range(1, 13)}
+            for x in oc:
+                mm = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
+                if 1 <= mm <= 12 and g in gm[mm] and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
+                    sg = -1.0 if g in DRE_REV else 1.0
+                    gm[mm][g]["p"] += sg * float(x.get("valor_planejado") or 0); gm[mm][g]["r"] += sg * float(x.get("valor_realizado") or 0)
+            for x in op:
+                mm = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
+                if 1 <= mm <= 12 and g in gm[mm] and (not emp or int(x.get("uni_cod", 0) or 0) == emp):
+                    sg = -1.0 if g in DRE_REV else 1.0
+                    gm[mm][g]["a"] += sg * float(x.get("valor_realizado") or 0)
+            return (rec, ded, cmv, pes, gm)
+
+        srcA = _agrega_ano(ano_a); srcB = _agrega_ano(ano_b)
+        # inclusão de linhas opcionais: união dos dois períodos (colunas alinhadas)
+        acc = {g: {"p": 0.0, "r": 0.0, "a": 0.0} for g, _ in DRE_GRUPOS}
+        for src, mss in ((srcA, meses_a), (srcB, meses_b)):
+            gm = src[4]
+            for g, _ in DRE_GRUPOS:
+                s = somar({m: gm[m][g] for m in range(1, 13)}, mss)
+                for k in ("p", "r", "a"): acc[g][k] += s[k]
+        incl_cmp = {"op": [g for g in DRE_OP_COST if nz(acc[g])],
+                    "var": nz(acc["Despesas Variáveis"]),
+                    "rf": nz(acc["Receitas Financeiras"]), "onop": nz(acc["Outras Receitas Não Operacionais"]),
+                    "df": nz(acc["Despesas Financeiras"]),
+                    "pre": nz(acc["Receitas Financeiras"]) or nz(acc["Outras Receitas Não Operacionais"]) or nz(acc["Despesas Financeiras"]),
+                    "imp": nz(acc[DRE_IMPOSTO])}
+        LA = montar(meses_a, src=srcA, incl=incl_cmp)
+        LB = montar(meses_b, src=srcB, incl=incl_cmp)
+        def _rl(L):
+            return next((d["r"] for n, d, t, f in L if n == "(=) Receita Líquida"), 0.0)
+        baseA = _rl(LA); baseB = _rl(LB)
+        lbl_a = f"{MABREV[de_a]}–{MABREV[ate_a]}/{ano_a}" if de_a != ate_a else f"{MABREV[de_a]}/{ano_a}"
+        lbl_b = f"{MABREV[de_b]}–{MABREV[ate_b]}/{ano_b}" if de_b != ate_b else f"{MABREV[de_b]}/{ano_b}"
+        th = (f"<th style='text-align:left'>Linha</th>"
+              f"<th>{lbl_a}</th><th>{lbl_a} AV%</th><th>{lbl_a} AH%</th>"
+              f"<th>{lbl_b}</th><th>{lbl_b} AV%</th><th>{lbl_b} AH%</th>"
+              f"<th>Var (R$)</th><th>Var (%)</th>")
+        corpo = ""
+        for (n, da, ta, fa), (_, db, tb, fb) in zip(LA, LB):
+            forte = n.startswith("(=")
+            b0, b1 = ("<b>", "</b>") if forte else ("", "")
+            ra = da["r"]; rb = db["r"]; aa = da["a"]; ab = db["a"]
+            ava = (ra / baseA * 100) if baseA else 0.0
+            avb = (rb / baseB * 100) if baseB else 0.0
+            aha = ((ra - aa) / aa * 100) if aa else None
+            ahb = ((rb - ab) / ab * 100) if ab else None
+            var = rb - ra; varp = (var / ra * 100) if ra else 0.0
+            if ta == "cost":
+                cor = CINZA_TXT if (ra and abs(varp) <= banda) else (VERMELHO if var > 0 else VERDE)
+            else:
+                cor = CINZA_TXT if (ra and abs(varp) <= banda) else (VERDE if var >= 0 else VERMELHO)
+            cls = " class='mark'" if forte else ""
+            corpo += (f"<tr{cls}><td style='text-align:left'>{b0}{n}{b1}</td>"
+                      f"<td>{b0}{brl(ra)}{b1}</td><td>{b0}{pct_txt(ava)}{b1}</td><td>{b0}{(pct_txt(aha) if aha is not None else '—')}{b1}</td>"
+                      f"<td>{b0}{brl(rb)}{b1}</td><td>{b0}{pct_txt(avb)}{b1}</td><td>{b0}{(pct_txt(ahb) if ahb is not None else '—')}{b1}</td>"
+                      f"<td style='color:{cor}'>{b0}{brl(var)}{b1}</td><td style='color:{cor}'>{b0}{pct_txt(varp)}{b1}</td></tr>")
+        st.markdown(f"<div class='scroll'><table class='lle matrix'><tr>{th}</tr>{corpo}</table></div>", unsafe_allow_html=True)
+        st.caption(f"Empresa: {'Todas' if not emp else EMP[emp]}. Só há dados quando o ano escolhido tem realizado carregado "
+                   "(receita, deduções, CMV, pessoal e orçado). AH% usa o ano anterior de cada período.")
+        try:
+            import io
+            rows = []
+            for (n, da, ta, fa), (_, db, tb, fb) in zip(LA, LB):
+                ra = da["r"]; rb = db["r"]; aa = da["a"]; ab = db["a"]
+                rows.append({"Linha": n, lbl_a: round(ra, 2),
+                             f"{lbl_a} AV%": round((ra / baseA * 100) if baseA else 0.0, 2),
+                             f"{lbl_a} AH%": round(((ra - aa) / aa * 100) if aa else 0.0, 2),
+                             lbl_b: round(rb, 2),
+                             f"{lbl_b} AV%": round((rb / baseB * 100) if baseB else 0.0, 2),
+                             f"{lbl_b} AH%": round(((rb - ab) / ab * 100) if ab else 0.0, 2),
+                             "Var (R$)": round(rb - ra, 2),
+                             "Var (%)": round(((rb - ra) / ra * 100) if ra else 0.0, 2)})
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as x:
+                pd.DataFrame(rows).to_excel(x, index=False, sheet_name="DRE comparação")
+            st.download_button("📥 Baixar comparação (Excel)", data=buf.getvalue(),
+                               file_name=f"DRE_comparacao_{ano_a}_vs_{ano_b}.xlsx", mime=XLSX_MIME, key="cmp_dl")
+        except Exception:
+            pass
+
+    if formato != "Comparar períodos" and not any(nz(gsum_span[g]) for g, _ in DRE_GRUPOS):
         st.info("Nenhuma conta do orçamento mapeada ainda. Abra **Mapear contas do orçamento** abaixo para incluir despesas e receitas financeiras na DRE.")
 
     # ----- mapeamento de contas -----
