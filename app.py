@@ -178,7 +178,7 @@ def inject_css():
 
 # ---------------------------------------------------------------- helpers
 def norm(s): return unicodedata.normalize("NFD", str(s)).encode("ascii", "ignore").decode().lower().strip()
-def brl(n): return "R$ " + f"{(n or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def brl(n): return "R$ " + f"{round(float(n or 0)):,.0f}".replace(",", ".")
 def pct_txt(n): return f"{n:+.1f}".replace(".", ",") + "%"
 def chunks(seq, n=500):
     for i in range(0, len(seq), n): yield seq[i:i + n]
@@ -201,6 +201,33 @@ def var_de(vp, vr):
     raw = (vr or 0) - (vp or 0)
     pct = raw / vp * 100 if vp else (100 if vr else 0)
     return raw, pct
+
+def hist_n(total, key, default=20):
+    """Controle compacto para os históricos: mostra as últimas N (padrão 20), com opção
+    de expandir (50/100/Tudo). Devolve quantas linhas exibir. Reduz o render e mantém o drill-down."""
+    if total <= default:
+        return total
+    opts = [20, 50, 100, "Tudo"]
+    opts = [o for o in opts if (o == "Tudo") or o <= max(total, default)]
+    if default in opts:
+        idx = opts.index(default)
+    else:
+        idx = 0
+    esc = st.selectbox("Exibir", opts, index=idx, key=key,
+                       format_func=lambda o: (f"últimas {o}" if isinstance(o, int) else f"tudo ({total})"))
+    n = total if esc == "Tudo" else min(int(esc), total)
+    st.caption(f"Mostrando {n} de {total} alteração(ões) — as mais recentes primeiro.")
+    return n
+
+def _exige_justif_orc(planned, histv):
+    """Justificativa do orçamento é obrigatória quando o orçado da conta excede em mais de
+    5% o realizado do ano anterior (sem histórico e com orçado > 0 também exige)."""
+    planned = float(planned or 0); histv = float(histv or 0)
+    if planned <= 0:
+        return False
+    if histv <= 0:
+        return True
+    return planned > histv * 1.05
 
 # ---------------------------------------------------------------- supabase
 def client():
@@ -256,6 +283,21 @@ def set_isentas(c, texto):
     codigos = sorted({int(x) for x in re.findall(r"\d+", texto or "")})
     c.table("config").upsert({"chave": "justif_isentas", "valor": ",".join(str(x) for x in codigos)}, on_conflict="chave").execute()
     return codigos
+
+def get_cr_corporativos(c):
+    """Códigos de CR que compõem a unidade de negócio 'Corporativo' (só afeta a visão da DRE por unidade)."""
+    try:
+        r = c.table("config").select("valor").eq("chave", "cr_corporativos").execute()
+        if not r.data:
+            return set()
+        return {int(x) for x in re.findall(r"\d+", str(r.data[0]["valor"] or ""))}
+    except Exception:
+        return set()
+
+def set_cr_corporativos(c, cods):
+    cods = sorted({int(x) for x in cods})
+    c.table("config").upsert({"chave": "cr_corporativos", "valor": ",".join(str(x) for x in cods)}, on_conflict="chave").execute()
+    return cods
 
 def get_plan_anos(c):
     """Anos habilitados para o gestor preencher o orçamento (padrão: 2027)."""
@@ -653,13 +695,17 @@ def contadores(df_mes, banda):
         html += f"<div class='card'><div class='lab'>{lab}</div><div class='val' style='color:{cor}'>{val}</div></div>"
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
-def tabela_evolucao(df, banda, mes_sel):
+def tabela_evolucao(df, banda, mes_sel, hist_m=None, hist_label=""):
     g = df.groupby("mes")[["valor_planejado", "valor_realizado"]].sum().reindex(range(1, 13), fill_value=0)
     cum = g.cumsum()
     st.caption("Clique em \u25b6 para abrir o orçado por conta e empresa do mês. YTD = acumulado até o mês.")
+    hist_on = hist_m is not None
+    gtc = "3.1fr 1.4fr 1.4fr 1.35fr 1.4fr 0.9fr 1.4fr"
+    style_grid = f' style="grid-template-columns:{gtc}"' if hist_on else ""
+    head_hist = f'<div class="r">{hist_label}</div>' if hist_on else ""
     ch1, ch2 = st.columns([0.05, 0.95])
-    ch2.markdown("""<div class="drow head"><div class="nm">Mês</div>
-        <div class="r">Orçado</div><div class="r">Realizado</div><div class="r">Var. (R$)</div>
+    ch2.markdown(f"""<div class="drow head"{style_grid}><div class="nm">Mês</div>
+        <div class="r">Orçado</div><div class="r">Realizado</div>{head_hist}<div class="r">Var. (R$)</div>
         <div class="r">Var. (%)</div><div class="r">Status</div></div>""", unsafe_allow_html=True)
 
     for m in range(1, 13):
@@ -677,9 +723,17 @@ def tabela_evolucao(df, banda, mes_sel):
             st.button("\u25bc" if exp else "\u25b6", key=f"btn_{key}", on_click=_toggle, args=(key,))
         exp = st.session_state.get(key, False)
         with cbody:
-            bg = " style=\'background:#FFF7E6\'" if m == mes_sel else ""
-            st.markdown(f"""<div class="drow"{bg}><div class="nm">{MESES[m]}</div>
-                <div class="r">{brl(vp)}</div><div class="r">{vr_txt}</div>
+            _sty = []
+            if m == mes_sel: _sty.append("background:#FFF7E6")
+            if hist_on: _sty.append(f"grid-template-columns:{gtc}")
+            row_style = f' style="{";".join(_sty)}"' if _sty else ""
+            if hist_on:
+                hv = float((hist_m or {}).get(m, 0.0))
+                cell_hist = f'<div class="r" style="color:{CINZA_TXT}">{brl(hv) if hv else "\u2014"}</div>'
+            else:
+                cell_hist = ""
+            st.markdown(f"""<div class="drow"{row_style}><div class="nm">{MESES[m]}</div>
+                <div class="r">{brl(vp)}</div><div class="r">{vr_txt}</div>{cell_hist}
                 <div class="r" style="color:{cor};font-weight:600">{var_txt}</div>
                 <div class="r" style="color:{cor}">{pctv}</div>
                 <div class="r">{status}</div></div>""", unsafe_allow_html=True)
@@ -961,8 +1015,8 @@ def _edicao_pessoal_frag(qf, kf, mes, uni_sel, cr_sel, c, prof):
         st.markdown("**Custo por categoria**")
         edk = st.data_editor(dk, key=f"hce_k_{mes}_{uni_sel}_{cr_sel}", hide_index=True, use_container_width=True,
                              num_rows="fixed", disabled=["Cargo", "Categoria"],
-                             column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                                            "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+                             column_config={"Orçado": st.column_config.NumberColumn(format="%.0f", step=1),
+                                            "Realizado": st.column_config.NumberColumn(format="%.0f", step=1)})
     else:
         edk = None
     if st.button("Salvar alterações de pessoal", key="hce_save", type="primary"):
@@ -973,7 +1027,7 @@ def _edicao_pessoal_frag(qf, kf, mes, uni_sel, cr_sel, c, prof):
                 an, me, uni, cr, cgo = kk
                 match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo)
                 for coluna, novos, orig in (("qtd_orcada", no, oqo), ("qtd_realizada", nr, oqr)):
-                    try: nv = round(float(novos[i]), 6)
+                    try: nv = round(float(novos[i]))
                     except (TypeError, ValueError): continue
                     if abs(nv - orig[i]) > 0.005:
                         c.table("hc_quadro").update({coluna: nv}).match(match).execute()
@@ -986,7 +1040,7 @@ def _edicao_pessoal_frag(qf, kf, mes, uni_sel, cr_sel, c, prof):
                 an, me, uni, cr, cgo, cat = kk
                 match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat)
                 for coluna, novos, orig in (("valor_orcado", no, oko), ("valor_realizado", nr, okr)):
-                    try: nv = round(float(novos[i]), 6)
+                    try: nv = round(float(novos[i]))
                     except (TypeError, ValueError): continue
                     if abs(nv - orig[i]) > 0.005:
                         c.table("hc_custo").update({coluna: nv}).match(match).execute()
@@ -1182,10 +1236,10 @@ def tela_headcount(c, prof, ano, mes, somente_leitura=False):
                         nome_q = prof.get("nome", "")
                         for _, r in sel.iterrows():
                             antigo = round(float(r["valor_orcado"]), 2)
-                            novo = round(antigo * fator, 6)
+                            novo = round(antigo * fator)
                             if novo == antigo: continue
                             rlz_raw = pd.to_numeric(r.get("valor_realizado"), errors="coerce")
-                            rlz = round(float(rlz_raw), 6) if pd.notna(rlz_raw) else 0.0
+                            rlz = round(float(rlz_raw)) if pd.notna(rlz_raw) else 0.0
                             an = int(r.get("ano") or ano); me = int(r["mes"]); uni = int(r["uni_cod"])
                             cr = int(r.get("cr_cod") or 0); cgo = str(r.get("cargo_cod")); cat = r["categoria"]
                             updates.append(dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat,
@@ -1219,8 +1273,9 @@ def tela_headcount(c, prof, ano, mes, somente_leitura=False):
             st.markdown("###### Histórico de alterações de pessoal")
             CAMPO_LAB = {"qtd_orcada": "HC orçado", "qtd_realizada": "HC realizado",
                          "valor_orcado": "Custo orçado", "valor_realizado": "Custo realizado"}
+            _n = hist_n(len(log), "hist_n_pessoal")
             linhas = ""
-            for g in log[:300]:
+            for g in log[:_n]:
                 quando = str(g.get("alterado_em", "") or "")[:16].replace("T", " ")
                 va = float(g.get("valor_antigo") or 0); vn = float(g.get("valor_novo") or 0)
                 seta = VERMELHO if vn > va else VERDE
@@ -1286,7 +1341,7 @@ def tela_importar(c, ano):
             recs.append(dict(ano=toint(pick(r, ["ano"])) or int(ano), mes=toint(pick(r, ["mes"])) or 1, uni_cod=uni,
                 unidade=str(pick(r, ["descricao unidade"]) or ""), cr_cod=cr, cr_nome=str(pick(r, ["descricao centro"]) or ""),
                 cr_grupo=str(pick(r, ["cr grupo"]) or ""), conta_cod=ct, conta_desc=str(pick(r, ["descricao conta"]) or ""),
-                valor_planejado=num(pick(r, ["valor planejado"])), valor_realizado=num(pick(r, ["valor realizado"])),
+                valor_planejado=round(num(pick(r, ["valor planejado"]))), valor_realizado=round(num(pick(r, ["valor realizado"]))),
                 tipo_conta=str(pick(r, ["tipo conta"]) or ""), classificacao=str(pick(r, ["classificacao"]) or "")))
         for ch in chunks(recs):
             c.table("orc_realizado").upsert(ch, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute()
@@ -1306,7 +1361,7 @@ def tela_importar(c, ano):
             m = re.search(r"\b(?:NF|CFE)\s*0*([0-9]{3,})", str(h), re.I) if isinstance(h, str) else None
             hist = re.sub(r"\s*-?\d+\.\d+\s*$", "", str(h)).strip() if isinstance(h, str) else str(h or "")
             recs.append(dict(ano=toint(pick(r, ["ano"])) or int(ano), mes=toint(pick(r, ["mes"])) or int(mes_op),
-                uni_cod=uni, cr_cod=cr, conta_cod=ct, num_doc=(m.group(1) if m else None), valor=num(pick(r, ["valor"])), historico=hist))
+                uni_cod=uni, cr_cod=cr, conta_cod=ct, num_doc=(m.group(1) if m else None), valor=round(num(pick(r, ["valor"]))), historico=hist))
         c.table("operacional_detalhe").delete().eq("ano", int(ano)).eq("mes", int(mes_op)).execute()
         for ch in chunks(recs):
             c.table("operacional_detalhe").insert(ch).execute()
@@ -1391,7 +1446,7 @@ def tela_importar(c, ano):
             quadro.append({**dim, qcol: num(cv(r, "QUANTIDADE_FUNCIONARIOS")),
                            outro_q: exist_q.get((an, me, uni, cr, cgo), 0)})
             for cat, rubricas in HC_MAP.items():
-                total = sum(num(cv(r, rub)) for rub in rubricas)
+                total = round(sum(num(cv(r, rub)) for rub in rubricas))
                 custo.append({**dim, "categoria": cat, vcol: total,
                               outro_v: exist_v.get((an, me, uni, cr, cgo, cat), 0)})
         # --- Aviso defensivo: colunas numéricas que o sistema NÃO reconhece ---
@@ -1450,8 +1505,8 @@ def relatorio_justificativas_xlsx(js_rows, df_orc, cg):
             "Gestor": gestor, "Cód. Unidade": uni, "Unidade": unidade,
             "Cód. CR": cr, "Centro de Resultado": cr_nome,
             "Cód. Conta": ct, "Descrição da Conta": conta_desc,
-            "Orçado": round(vp, 2), "Realizado": round(vr, 2),
-            "Variação (R$)": round(raw, 2), "Variação (%)": round(pct, 2),
+            "Orçado": round(vp), "Realizado": round(vr),
+            "Variação (R$)": round(raw), "Variação (%)": round(pct, 2),
             "Situação": STATUS_LABEL.get(j.get("status", "PENDENTE"), j.get("status", "")),
             "Justificativa": j.get("texto", "") or "",
             "Comentário Controladoria": j.get("comentario_controladoria", "") or "",
@@ -1618,15 +1673,15 @@ def _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, conta_sel, c, prof):
     edited = st.data_editor(
         disp, key=f"edo_grid_{mes}_{uni_sel}_{cr_sel}_{conta_sel}", hide_index=True, use_container_width=True,
         num_rows="fixed", disabled=["Unidade", "Centro de resultado", "Conta"],
-        column_config={"Orçado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+        column_config={"Orçado": st.column_config.NumberColumn(format="%.0f", step=1),
+                       "Realizado": st.column_config.NumberColumn(format="%.0f", step=1)})
     if st.button("Salvar alterações", key="edo_save", type="primary"):
         novos_o = list(edited["Orçado"]); novos_r = list(edited["Realizado"]); mudou = 0
         for i, kkey in enumerate(keys):
             an, me, uni, cr, ct = kkey
             match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, conta_cod=ct)
             for coluna, novos, orig in (("valor_planejado", novos_o, orig_o), ("valor_realizado", novos_r, orig_r)):
-                try: nv = round(float(novos[i]), 6)
+                try: nv = round(float(novos[i]))
                 except (TypeError, ValueError): continue
                 if abs(nv - orig[i]) > 0.005:
                     c.table("orc_realizado").update({coluna: nv}).match(match).execute()
@@ -1681,8 +1736,9 @@ def tela_editar_orcado(c, prof, df_orc, ano, mes):
     nome = {}
     for _, r in df_orc.iterrows():
         nome[(int(r["uni_cod"]), int(r["cr_cod"]), int(r["conta_cod"]))] = (r.get("unidade", ""), r.get("cr_nome", ""), r.get("conta_desc", ""))
+    _n = hist_n(len(log), "hist_n_orcado")
     linhas = ""
-    for g in log[:300]:
+    for g in log[:_n]:
         uni = int(g.get("uni_cod") or 0); cr = int(g.get("cr_cod") or 0); ct = int(g.get("conta_cod") or 0)
         un, crn, cd = nome.get((uni, cr, ct), ("", "", ""))
         quando = str(g.get("alterado_em", "") or "")[:16].replace("T", " ")
@@ -1719,6 +1775,8 @@ def _registro_mensal_frag(tabela, tabela_log, log_loader, dfr, emp, ano, c, prof
         k = (int(r.get("mes", 0) or 0), int(r.get("uni_cod", 0) or 0))
         hist_idx[k] = hist_idx.get(k, 0.0) + float(r.get("valor_realizado") or 0)
     hcol = f"Hist. {ano-1}"
+    hist_on = st.checkbox(f"Mostrar {hcol} (mês a mês)", value=False, key=f"{tabela}_hist_{emp}",
+                          help="Coluna de referência com o realizado do mesmo mês no ano anterior.")
     keys, disp_mes, disp_emp, ohist, oplan, oreal = [], [], [], [], [], []
     for u in emps:
         for m in range(1, 13):
@@ -1727,16 +1785,22 @@ def _registro_mensal_frag(tabela, tabela_log, log_loader, dfr, emp, ano, c, prof
             ohist.append(round(hist_idx.get((m, u), 0.0), 2))
             oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
             oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
-    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, hcol: ohist, "Planejado": oplan, "Realizado": oreal})
+    cols = {"Mês": disp_mes, "Empresa": disp_emp}
+    if hist_on: cols[hcol] = ohist
+    cols["Planejado"] = oplan; cols["Realizado"] = oreal
+    dedit = pd.DataFrame(cols)
+    ccfg = {"Planejado": st.column_config.NumberColumn(format="%.0f", step=1),
+            "Realizado": st.column_config.NumberColumn(format="%.0f", step=1)}
+    disc = ["Mês", "Empresa"]
+    if hist_on:
+        ccfg[hcol] = st.column_config.NumberColumn(f"{hcol} (R$)", format="%.0f", help="Realizado do ano anterior — referência, não editável")
+        disc.append(hcol)
     ed = st.data_editor(dedit, key=f"{tabela}_grid_{emp}", hide_index=True, use_container_width=True,
-                        num_rows="fixed", disabled=["Mês", "Empresa", hcol],
-                        column_config={hcol: st.column_config.NumberColumn(f"{hcol} (R$)", format="%.2f", help="Realizado do ano anterior — referência, não editável"),
-                                       "Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+                        num_rows="fixed", disabled=disc, column_config=ccfg)
     if st.button(f"Salvar {rotulo}", key=f"{tabela}_save", type="primary"):
         np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"]); mudou = 0
         for i, (m, u) in enumerate(keys):
-            try: p_novo = round(float(np_[i]), 6); r_novo = round(float(nr_[i]), 6)
+            try: p_novo = round(float(np_[i])); r_novo = round(float(nr_[i]))
             except (TypeError, ValueError): continue
             mud_p = abs(p_novo - oplan[i]) > 0.005; mud_r = abs(r_novo - oreal[i]) > 0.005
             if not (mud_p or mud_r): continue
@@ -1757,8 +1821,9 @@ def _registro_mensal_frag(tabela, tabela_log, log_loader, dfr, emp, ano, c, prof
     if log:
         st.markdown(f"###### Histórico de alterações de {rotulo}")
         CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
+        _n = hist_n(len(log), f"hist_n_{tabela}")
         ln = ""
-        for glog in log[:300]:
+        for glog in log[:_n]:
             quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
             va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
             seta = (VERMELHO if vn > va else VERDE) if custo else (VERDE if vn > va else VERMELHO)
@@ -1908,25 +1973,45 @@ def _registro_deducao_frag(dfr, emp, conta, ano, c, prof):
     st.divider()
     st.markdown(f"#### Registrar / editar — {conta}")
     st.caption("Preencha Planejado e Realizado por empresa e mês desta dedução. A edição roda isolada — o app não recarrega a cada célula. Toda alteração fica no log.")
+    hcol = f"Hist. {ano-1}"
+    hist_on = st.checkbox(f"Mostrar {hcol} (mês a mês)", value=False, key=f"ded_hist_{conta}_{emp}",
+                          help="Realizado do mesmo mês no ano anterior, para esta dedução — referência.")
+    hist_idx = {}
+    if hist_on:
+        try:
+            prev = c.table("deducao_valor").select("mes,uni_cod,valor_realizado").eq("ano", ano - 1).eq("conta", conta).execute().data or []
+        except Exception:
+            prev = []
+        for r in prev:
+            k = (int(r.get("mes", 0) or 0), int(r.get("uni_cod", 0) or 0))
+            hist_idx[k] = hist_idx.get(k, 0.0) + float(r.get("valor_realizado") or 0)
     emps = [1, 2] if not emp else [emp]
     sub = dfr[dfr["conta"] == conta] if "conta" in dfr.columns else dfr.iloc[0:0]
     idx = {(int(r["mes"]), int(r["uni_cod"])): r for _, r in sub.iterrows()}
-    keys, disp_mes, disp_emp, oplan, oreal = [], [], [], [], []
+    keys, disp_mes, disp_emp, ohist, oplan, oreal = [], [], [], [], [], []
     for u in emps:
         for m in range(1, 13):
             r = idx.get((m, u))
             keys.append((m, u)); disp_mes.append(MESES[m]); disp_emp.append(EMP[u])
+            ohist.append(round(hist_idx.get((m, u), 0.0), 2))
             oplan.append(round(float(r["valor_planejado"]) if r is not None else 0.0, 2))
             oreal.append(round(float(r["valor_realizado"]) if r is not None else 0.0, 2))
-    dedit = pd.DataFrame({"Mês": disp_mes, "Empresa": disp_emp, "Planejado": oplan, "Realizado": oreal})
+    cols = {"Mês": disp_mes, "Empresa": disp_emp}
+    if hist_on: cols[hcol] = ohist
+    cols["Planejado"] = oplan; cols["Realizado"] = oreal
+    dedit = pd.DataFrame(cols)
+    ccfg = {"Planejado": st.column_config.NumberColumn(format="%.0f", step=1),
+            "Realizado": st.column_config.NumberColumn(format="%.0f", step=1)}
+    disc = ["Mês", "Empresa"]
+    if hist_on:
+        ccfg[hcol] = st.column_config.NumberColumn(f"{hcol} (R$)", format="%.0f", help="Realizado do ano anterior — referência, não editável")
+        disc.append(hcol)
     ed = st.data_editor(dedit, key=f"ded_grid_{conta}_{emp}", hide_index=True, use_container_width=True,
-                        num_rows="fixed", disabled=["Mês", "Empresa"],
-                        column_config={"Planejado": st.column_config.NumberColumn(format="%.2f", step=0.01),
-                                       "Realizado": st.column_config.NumberColumn(format="%.2f", step=0.01)})
+                        num_rows="fixed", disabled=disc, column_config=ccfg)
     if st.button("Salvar deduções", key="ded_save", type="primary"):
         np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"]); mudou = 0
         for i, (m, u) in enumerate(keys):
-            try: p_novo = round(float(np_[i]), 6); r_novo = round(float(nr_[i]), 6)
+            try: p_novo = round(float(np_[i])); r_novo = round(float(nr_[i]))
             except (TypeError, ValueError): continue
             mud_p = abs(p_novo - oplan[i]) > 0.005; mud_r = abs(r_novo - oreal[i]) > 0.005
             if not (mud_p or mud_r): continue
@@ -2022,8 +2107,9 @@ def tela_deducao(c, prof, ano):
     if log:
         st.markdown("###### Histórico de alterações de deduções")
         CL = {"valor_planejado": "Planejado", "valor_realizado": "Realizado"}
+        _n = hist_n(len(log), "hist_n_deducao")
         ln = ""
-        for glog in log[:300]:
+        for glog in log[:_n]:
             quando = str(glog.get("alterado_em", "") or "")[:16].replace("T", " ")
             va = float(glog.get("valor_antigo") or 0); vn = float(glog.get("valor_novo") or 0)
             seta = VERMELHO if vn > va else VERDE
@@ -2262,33 +2348,61 @@ def tela_dre(c, prof, ano):
     # ================= POR UNIDADE (PISA | KING | Consolidado) =================
     elif formato == "Por unidade":
         meses_u = meses_range if visao == "Mensal" else list(range(1, ate + 1))
+        corp_set = get_cr_corporativos(c)   # CRs marcados como corporativos
 
-        def dicts_emp(empf):
-            def pm(loader, kp, kr):
-                cur = loader(ano) or []; prev = loader(ano - 1) or []
+        def dicts_unidade(kind):
+            # kind: 'all' | 'pisa' | 'king' | 'corp'
+            # Receita/Deduções/CMV são por EMPRESA (sem CR) → ficam em PISA/KING; 'corp' = 0.
+            # Despesas (orçamento) e Pessoal são por CR → CRs corporativos migram para 'corp'.
+            def emp_ok(uni):
+                if kind == "pisa": return uni == 1
+                if kind == "king": return uni == 2
+                return True
+            def cr_ok(uni, cr):
+                if kind == "all": return True
+                if kind == "corp": return cr in corp_set
+                if kind == "pisa": return uni == 1 and cr not in corp_set
+                if kind == "king": return uni == 2 and cr not in corp_set
+                return False
+            def pm_emp(loader, kp, kr):
                 dd = {mm: {"p": 0.0, "r": 0.0, "a": 0.0} for mm in range(1, 13)}
+                if kind == "corp":
+                    return dd
+                cur = loader(ano) or []; prev = loader(ano - 1) or []
                 for x in cur:
                     mm = int(x.get("mes", 0) or 0)
-                    if 1 <= mm <= 12 and (not empf or int(x.get("uni_cod", 0) or 0) == empf):
+                    if 1 <= mm <= 12 and emp_ok(int(x.get("uni_cod", 0) or 0)):
                         dd[mm]["p"] += float(x.get(kp) or 0); dd[mm]["r"] += float(x.get(kr) or 0)
                 for x in prev:
                     mm = int(x.get("mes", 0) or 0)
-                    if 1 <= mm <= 12 and (not empf or int(x.get("uni_cod", 0) or 0) == empf):
+                    if 1 <= mm <= 12 and emp_ok(int(x.get("uni_cod", 0) or 0)):
                         dd[mm]["a"] += float(x.get(kr) or 0)
                 return dd
-            rec = pm(carregar_receita, "valor_planejado", "valor_realizado")
-            ded = pm(carregar_deducao, "valor_planejado", "valor_realizado")
-            cmv = pm(carregar_cmv, "valor_planejado", "valor_realizado")
-            pes = pm(carregar_hc_custo, "valor_orcado", "valor_realizado")
+            def pm_cr(loader, kp, kr):
+                dd = {mm: {"p": 0.0, "r": 0.0, "a": 0.0} for mm in range(1, 13)}
+                cur = loader(ano) or []; prev = loader(ano - 1) or []
+                for x in cur:
+                    mm = int(x.get("mes", 0) or 0)
+                    if 1 <= mm <= 12 and cr_ok(int(x.get("uni_cod", 0) or 0), int(x.get("cr_cod", 0) or 0)):
+                        dd[mm]["p"] += float(x.get(kp) or 0); dd[mm]["r"] += float(x.get(kr) or 0)
+                for x in prev:
+                    mm = int(x.get("mes", 0) or 0)
+                    if 1 <= mm <= 12 and cr_ok(int(x.get("uni_cod", 0) or 0), int(x.get("cr_cod", 0) or 0)):
+                        dd[mm]["a"] += float(x.get(kr) or 0)
+                return dd
+            rec = pm_emp(carregar_receita, "valor_planejado", "valor_realizado")
+            ded = pm_emp(carregar_deducao, "valor_planejado", "valor_realizado")
+            cmv = pm_emp(carregar_cmv, "valor_planejado", "valor_realizado")
+            pes = pm_cr(carregar_hc_custo, "valor_orcado", "valor_realizado")
             gm = {mm: {g: {"p": 0.0, "r": 0.0, "a": 0.0} for g, _ in DRE_GRUPOS} for mm in range(1, 13)}
             for x in orc_cur:
                 mm = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
-                if 1 <= mm <= 12 and g in gm[mm] and (not empf or int(x.get("uni_cod", 0) or 0) == empf):
+                if 1 <= mm <= 12 and g in gm[mm] and cr_ok(int(x.get("uni_cod", 0) or 0), int(x.get("cr_cod", 0) or 0)):
                     sg = -1.0 if g in DRE_REV else 1.0
                     gm[mm][g]["p"] += sg * float(x.get("valor_planejado") or 0); gm[mm][g]["r"] += sg * float(x.get("valor_realizado") or 0)
             for x in orc_prev:
                 mm = int(x.get("mes", 0) or 0); g = mapa.get(int(x.get("conta_cod", 0) or 0))
-                if 1 <= mm <= 12 and g in gm[mm] and (not empf or int(x.get("uni_cod", 0) or 0) == empf):
+                if 1 <= mm <= 12 and g in gm[mm] and cr_ok(int(x.get("uni_cod", 0) or 0), int(x.get("cr_cod", 0) or 0)):
                     sg = -1.0 if g in DRE_REV else 1.0
                     gm[mm][g]["a"] += sg * float(x.get("valor_realizado") or 0)
             return rec, ded, cmv, pes, gm
@@ -2327,7 +2441,8 @@ def tela_dre(c, prof, ano):
                 L.append(("(=) Resultado Líquido", res_liq))
             return L
 
-        dd_all = dicts_emp(0); dd_pisa = dicts_emp(1); dd_king = dicts_emp(2)
+        dd_all = dicts_unidade("all"); dd_pisa = dicts_unidade("pisa")
+        dd_king = dicts_unidade("king"); dd_corp = dicts_unidade("corp")
         # inclusão de linhas decidida sobre o CONSOLIDADO (para alinhar as colunas)
         gall = dd_all[4]
         gsp = {g: somar({mm: gall[mm][g] for mm in range(1, 13)}, meses_u) for g, _ in DRE_GRUPOS}
@@ -2338,26 +2453,74 @@ def tela_dre(c, prof, ano):
         L_all = montar_u(dd_all, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var)
         L_pisa = montar_u(dd_pisa, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var)
         L_king = montar_u(dd_king, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var)
+        L_corp = montar_u(dd_corp, meses_u, op_inc, tp, i_rf, i_onop, i_df, i_imp, i_var)
 
         med = st.radio("Medida", ["Realizado", "Planejado", f"Ano ant. ({ano-1})"], horizontal=True, key="dre_uni_medida")
         key_med = {"Realizado": "r", "Planejado": "p"}.get(med, "a")
-        st.caption("Comparativo por unidade — mostra PISA, KING e o Consolidado (soma das duas), independente do filtro Empresa acima.")
+        tem_corp = len(corp_set) > 0
+        st.caption("Comparativo por unidade de negócio — PISA, KING e Corporativo (CRs que atendem ao corporativo, "
+                   "movidos apenas nesta visão) e o Consolidado (soma das unidades). Receita/Deduções/CMV ficam em "
+                   "PISA/KING; o Corporativo concentra despesas e pessoal dos CRs marcados. Configure os CRs em "
+                   "Administração › Unidades de negócio / Config DRE.")
 
-        th = "<th style='text-align:left'>Linha</th><th>PISA</th><th>KING</th><th>Consolidado</th>"
+        if tem_corp:
+            th = "<th style='text-align:left'>Linha</th><th>PISA</th><th>KING</th><th>Corporativo</th><th>Consolidado</th>"
+        else:
+            th = "<th style='text-align:left'>Linha</th><th>PISA</th><th>KING</th><th>Consolidado</th>"
         corpo = ""
-        for (n, dp), (_, dk), (_, da) in zip(L_pisa, L_king, L_all):
+        for i in range(len(L_all)):
+            n, da = L_all[i]; dp = L_pisa[i][1]; dk = L_king[i][1]; dc = L_corp[i][1]
             forte = n.startswith("(=")
             b0, b1 = ("<b>", "</b>") if forte else ("", "")
             cls = " class='mark'" if forte else ""
-            corpo += (f"<tr{cls}><td style='text-align:left'>{b0}{n}{b1}</td>"
-                      f"<td>{b0}{brl(dp[key_med])}{b1}</td>"
-                      f"<td>{b0}{brl(dk[key_med])}{b1}</td>"
-                      f"<td>{b0}{brl(da[key_med])}{b1}</td></tr>")
+            cells = f"<td>{b0}{brl(dp[key_med])}{b1}</td><td>{b0}{brl(dk[key_med])}{b1}</td>"
+            if tem_corp:
+                cells += f"<td>{b0}{brl(dc[key_med])}{b1}</td>"
+            cells += f"<td>{b0}{brl(da[key_med])}{b1}</td>"
+            corpo += f"<tr{cls}><td style='text-align:left'>{b0}{n}{b1}</td>{cells}</tr>"
         st.markdown(f"<div class='scroll'><table class='lle'><tr>{th}</tr>{corpo}</table></div>", unsafe_allow_html=True)
+
+        # ----- lucratividade por unidade de negócio -----
+        def _line(L, nome):
+            return next((d for nn, d in L if nn == nome), None)
+        def _bottom(L):
+            res = None
+            for nn, d in L:
+                if nn.startswith("(="):
+                    res = d
+            return res
+        st.markdown("#### Lucratividade por unidade de negócio")
+        unidades = [("PISA", L_pisa), ("KING", L_king)]
+        if tem_corp:
+            unidades.append(("Corporativo", L_corp))
+        unidades.append(("Consolidado", L_all))
+        linhas_luc = ""
+        for nome_u, L in unidades:
+            rl = _line(L, "(=) Receita Líquida"); res = _bottom(L)
+            rlv = rl[key_med] if rl else 0.0
+            resv = res[key_med] if res else 0.0
+            marg = (resv / rlv * 100) if rlv else None
+            cor = CINZA_TXT if marg is None else (VERDE if resv >= 0 else VERMELHO)
+            marg_txt = pct_txt(marg) if marg is not None else "—"
+            linhas_luc += (f"<tr><td style='text-align:left'>{nome_u}</td>"
+                           f"<td>{brl(rlv)}</td><td style='color:{cor}'>{brl(resv)}</td>"
+                           f"<td style='color:{cor}'>{marg_txt}</td></tr>")
+        st.markdown("<div class='scroll'><table class='lle'><tr>"
+                    "<th style='text-align:left'>Unidade de negócio</th><th>Receita Líquida</th>"
+                    f"<th>Resultado Líquido</th><th>Margem líquida</th></tr>{linhas_luc}</table></div>", unsafe_allow_html=True)
+        st.caption("Margem líquida = Resultado Líquido ÷ Receita Líquida da unidade. O Corporativo não tem receita "
+                   "própria (concentra despesas), por isso a margem aparece como “—”.")
+
         try:
             import io
-            rows = [{"Linha": n, "PISA": round(dp[key_med], 2), "KING": round(dk[key_med], 2), "Consolidado": round(da[key_med], 2)}
-                    for (n, dp), (_, dk), (_, da) in zip(L_pisa, L_king, L_all)]
+            rows = []
+            for i in range(len(L_all)):
+                n, da = L_all[i]; dp = L_pisa[i][1]; dk = L_king[i][1]; dc = L_corp[i][1]
+                r = {"Linha": n, "PISA": round(dp[key_med]), "KING": round(dk[key_med])}
+                if tem_corp:
+                    r["Corporativo"] = round(dc[key_med])
+                r["Consolidado"] = round(da[key_med])
+                rows.append(r)
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as x:
                 pd.DataFrame(rows).to_excel(x, index=False, sheet_name="DRE por unidade")
@@ -2523,13 +2686,13 @@ def tela_dre(c, prof, ano):
             rows = []
             for (n, da, ta, fa), (_, db, tb, fb) in zip(LA, LB):
                 ra = da["r"]; rb = db["r"]; aa = da["a"]; ab = db["a"]
-                rows.append({"Linha": n, lbl_a: round(ra, 2),
+                rows.append({"Linha": n, lbl_a: round(ra),
                              f"{lbl_a} AV%": round((ra / baseA * 100) if baseA else 0.0, 2),
                              f"{lbl_a} AH%": round(((ra - aa) / aa * 100) if aa else 0.0, 2),
-                             lbl_b: round(rb, 2),
+                             lbl_b: round(rb),
                              f"{lbl_b} AV%": round((rb / baseB * 100) if baseB else 0.0, 2),
                              f"{lbl_b} AH%": round(((rb - ab) / ab * 100) if ab else 0.0, 2),
-                             "Var (R$)": round(rb - ra, 2),
+                             "Var (R$)": round(rb - ra),
                              "Var (%)": round(((rb - ra) / ra * 100) if ra else 0.0, 2)})
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as x:
@@ -2540,33 +2703,7 @@ def tela_dre(c, prof, ano):
             pass
 
     if formato != "Comparar períodos" and not any(nz(gsum_span[g]) for g, _ in DRE_GRUPOS):
-        st.info("Nenhuma conta do orçamento mapeada ainda. Abra **Mapear contas do orçamento** abaixo para incluir despesas e receitas financeiras na DRE.")
-
-    # ----- mapeamento de contas -----
-    # Uma linha por CÓDIGO de conta (o mapeamento é salvo por código). Se o mesmo
-    # código vier com descrições diferentes no orçamento, juntamos as descrições e
-    # avisamos — assim o código não aparece duplicado no seletor.
-    desc_por_cod = {}
-    for x in orc_cur:
-        cod = x.get("conta_cod")
-        if cod is None:
-            continue
-        cod = int(cod); d = str(x.get("conta_desc", "") or "").strip()
-        desc_por_cod.setdefault(cod, [])
-        if d and d not in desc_por_cod[cod]:
-            desc_por_cod[cod].append(d)
-    contas = sorted((cod, " / ".join(ds) if ds else "") for cod, ds in desc_por_cod.items())
-    colididos = {cod: ds for cod, ds in desc_por_cod.items() if len(ds) > 1}
-    with st.expander("⚙️ Mapear contas do orçamento para a DRE"):
-        if not contas:
-            st.caption("Nenhuma conta de orçamento carregada para este ano.")
-        else:
-            if colididos:
-                aviso = "; ".join(f"{cod} ({' / '.join(ds)})" for cod, ds in sorted(colididos.items()))
-                st.warning("Estes códigos aparecem no orçamento com **mais de uma descrição** — o sistema os trata "
-                           "como uma única conta (soma tudo sob o código). Se forem contas diferentes, corrija o "
-                           f"código na origem (ERP/plano de contas): {aviso}.")
-            _mapa_dre_frag(contas, mapa, c, prof)
+        st.info("Nenhuma conta do orçamento mapeada ainda. Configure em **Administração › Unidades de negócio / Config DRE**.")
 
 # ---------------------------------------------------------------- investimentos
 def tela_investimento(c, prof, ano):
@@ -3000,7 +3137,17 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_j
                    + f"{banda:.1f}".replace(".", ",") + "%).")
     elif "Evolução" in secao:
         st.markdown("#### Evolução mensal — Jan a Dez (mês e acumulado YTD)")
-        tabela_evolucao(df, banda, mes)
+        hist_m = None
+        if st.checkbox(f"Mostrar realizado {ano-1} (mês a mês)", value=False, key="evo_hist",
+                       help="Adiciona, ao lado de Realizado, o realizado do mesmo mês no ano anterior — no mesmo recorte de filtros."):
+            keys = {(int(r["uni_cod"]), int(r["cr_cod"]), int(r["conta_cod"])) for _, r in df.iterrows()}
+            hist_m = {m: 0.0 for m in range(1, 13)}
+            for r in (carregar_orc(ano - 1) or []):
+                if (int(r.get("uni_cod", 0) or 0), int(r.get("cr_cod", 0) or 0), int(r.get("conta_cod", 0) or 0)) in keys:
+                    mm = int(r.get("mes", 0) or 0)
+                    if 1 <= mm <= 12:
+                        hist_m[mm] += float(r.get("valor_realizado") or 0)
+        tabela_evolucao(df, banda, mes, hist_m, f"Realizado {ano-1}")
     elif "Valores" in secao:
         st.markdown(f"#### Valores mês a mês — Planejado × Realizado × Histórico ({ano-1})")
         secao_valores(c, df, ano, mes)
@@ -3015,16 +3162,27 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_j
 @fragment
 def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist=None):
     hist = hist or {}
+    if not contas:
+        st.info("Nenhuma conta disponível para lançar. Importe/atualize o plano de contas.")
+        return
     idx = {int(r["conta_cod"]): r for r in plan_rows
            if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None}
+    hm_on = st.checkbox(f"Histórico mês a mês ({ano-1})", value=False, key=f"plan_hm_{uni_cod}_{cr_cod}",
+                        help="Mostra, ao lado de cada mês, o realizado do mesmo mês no ano anterior (referência, não editável).")
     data = {"Conta": [f"{cod} · {desc}" for cod, desc in contas],
             f"Histórico {ano-1}": [round(float(hist.get(cod, {}).get("total", 0.0)), 2) for cod, _ in contas]}
+    ant_cols = []
     for mi in range(1, 13):
         data[MABREV[mi]] = [float((idx.get(cod, {}) or {}).get(f"m{mi}") or 0) for cod, _ in contas]
+        if hm_on:
+            an = f"{MABREV[mi]} ant."
+            ant_cols.append(an)
+            data[an] = [round(float((hist.get(cod, {}).get("m", {}) or {}).get(mi, 0.0)), 2) for cod, _ in contas]
     df = pd.DataFrame(data)
-    colcfg = {f"Histórico {ano-1}": st.column_config.NumberColumn(f"Histórico {ano-1} (R$)", format="%.2f", help="Realizado do ano anterior (total do ano) — referência, não editável")}
-    colcfg.update({MABREV[mi]: st.column_config.NumberColumn(f"{MABREV[mi]} (R$)", format="%.2f", step=0.01, help="Digite o valor planejado deste mês") for mi in range(1, 13)})
-    disabled = ["Conta", f"Histórico {ano-1}"] + ([] if editavel else [MABREV[mi] for mi in range(1, 13)])
+    colcfg = {f"Histórico {ano-1}": st.column_config.NumberColumn(f"Histórico {ano-1} (R$)", format="%.0f", help="Realizado do ano anterior (total do ano) — referência, não editável")}
+    colcfg.update({MABREV[mi]: st.column_config.NumberColumn(f"{MABREV[mi]} (R$)", format="%.0f", step=1, help="Digite o valor planejado deste mês") for mi in range(1, 13)})
+    colcfg.update({an: st.column_config.NumberColumn(f"{an} (R$)", format="%.0f", help=f"Realizado deste mês em {ano-1} — referência, não editável") for an in ant_cols})
+    disabled = ["Conta", f"Histórico {ano-1}"] + ant_cols + ([] if editavel else [MABREV[mi] for mi in range(1, 13)])
     if editavel:
         st.markdown(
             "<div style='background:#EEF2F8;border-left:4px solid " + AZUL_CORP + ";padding:9px 13px;"
@@ -3055,7 +3213,7 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
                 row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                        "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", "")}
                 for mi in range(1, 13):
-                    row[f"m{mi}"] = round(float(hm.get(mi, 0) or 0), 6)
+                    row[f"m{mi}"] = round(float(hm.get(mi, 0) or 0))
                 c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute(); n += 1
             c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": "RASCUNHO",
                                                "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
@@ -3065,12 +3223,38 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
         if ok:
             limpar_cache(); st.success(f"{ano-1} copiado para {n} conta(s). Ajuste os meses e envie."); st.rerun()
     if salvar or enviar:
+        gravou = 0
         for i, (cod, desc) in enumerate(contas):
+            vals = {f"m{mi}": round(float(ed[MABREV[mi]].iloc[i] or 0)) for mi in range(1, 13)}
+            tem_valor = any(v != 0 for v in vals.values())
+            ja_existe = int(cod) in idx  # conta já lançada antes neste CR
+            if not tem_valor and not ja_existe:
+                continue  # não cria linha zerada para conta nunca usada (mantém o orc_plan enxuto)
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
-                   "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", "")}
-            for mi in range(1, 13):
-                row[f"m{mi}"] = round(float(ed[MABREV[mi]].iloc[i] or 0), 6)
+                   "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", ""), **vals}
             c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
+            gravou += 1
+        pend = []
+        if enviar:
+            try:
+                cols = "conta_cod,conta_desc,justificativa," + ",".join(f"m{mi}" for mi in range(1, 13))
+                fresh = (c.table("orc_plan").select(cols).eq("ano", ano).eq("uni_cod", uni_cod)
+                         .eq("cr_cod", cr_cod).execute().data or [])
+            except Exception:
+                fresh = []
+            for r in fresh:
+                planned = sum(float(r.get(f"m{mi}") or 0) for mi in range(1, 13))
+                histv = float((hist.get(int(r.get("conta_cod") or 0), {}) or {}).get("total", 0.0))
+                if _exige_justif_orc(planned, histv) and not str(r.get("justificativa") or "").strip():
+                    pend.append(f"{int(r.get('conta_cod') or 0)} · {r.get('conta_desc','')}")
+        if enviar and pend:
+            # valores salvos, mas NÃO envia: mantém rascunho e cobra as justificativas obrigatórias
+            c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": "RASCUNHO",
+                                               "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
+            limpar_cache()
+            st.error("Não é possível finalizar: contas com orçado acima de +5% do histórico sem justificativa — "
+                     + "; ".join(pend) + ". Vá em “2) Justificativas por conta”, justifique e reenvie.")
+            st.stop()
         novo = "ENVIADO" if enviar else "RASCUNHO"
         c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": novo,
                                            "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
@@ -3082,6 +3266,52 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
             st.success("Rascunho salvo.")
         st.rerun()
 
+def secao_justif_orcamento(c, prof, ano, uni_cod, cr_cod, plan_rows, hist, editavel):
+    """Justificativas do orçamento por conta contábil (mesma cara do fluxo de justificativas).
+    Sobem junto no orc_plan.justificativa. Obrigatória quando o orçado excede +5% do histórico."""
+    rows = [r for r in plan_rows if int(r.get("uni_cod", 0) or 0) == uni_cod
+            and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None]
+    itens = []
+    for r in rows:
+        planned = sum(float(r.get(f"m{mi}") or 0) for mi in range(1, 13))
+        if planned == 0:
+            continue
+        cod = int(r["conta_cod"]); histv = float((hist.get(cod, {}) or {}).get("total", 0.0))
+        itens.append((cod, r.get("conta_desc", "") or "", planned, histv, str(r.get("justificativa") or "")))
+    if not itens:
+        st.info("Nenhuma conta com valor orçado neste centro ainda. Preencha os valores na etapa “Valores” primeiro.")
+        return
+    itens.sort(key=lambda x: -x[2])
+    obrig_pend = [it for it in itens if _exige_justif_orc(it[2], it[3]) and not it[4].strip()]
+    st.caption("Justifique as despesas orçadas por conta. A justificativa é obrigatória quando o orçado excede em "
+               f"mais de 5% o realizado de {ano-1}. Ela sobe junto para a controladoria analisar na aprovação.")
+    if obrig_pend:
+        st.warning(f"{len(obrig_pend)} conta(s) acima de +5% do histórico ainda sem justificativa — obrigatórias para enviar o CR.")
+    for cod, desc, planned, histv, just in itens:
+        req = _exige_justif_orc(planned, histv)
+        varpct = ((planned - histv) / histv * 100) if histv else (100.0 if planned else 0.0)
+        if just.strip():
+            tag = chip("Justificada", VERDE)
+        elif req:
+            tag = chip("Obrigatória", VERMELHO)
+        else:
+            tag = chip("Opcional", CINZA_TXT)
+        titulo = f"{cod} · {desc} — Orçado {brl(planned)} · Hist {ano-1} {brl(histv)} ({pct_txt(varpct)})"
+        with st.expander(titulo):
+            st.markdown(tag, unsafe_allow_html=True)
+            if editavel:
+                txt = st.text_area("Justificativa da conta", value=just, key=f"ojust_{uni_cod}_{cr_cod}_{cod}")
+                if st.button("Salvar justificativa", key=f"ojust_sv_{uni_cod}_{cr_cod}_{cod}"):
+                    try:
+                        c.table("orc_plan").update({"justificativa": txt}).match(
+                            {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "conta_cod": cod}).execute()
+                        limpar_cache(); st.success("Justificativa salva."); st.rerun()
+                    except Exception as e:
+                        st.error(f"Não foi possível salvar (a coluna 'justificativa' existe no orc_plan?): {e}")
+            else:
+                st.info(just or "— (sem justificativa)")
+                st.caption("🔒 Não editável (janela fechada ou já enviado/aprovado).")
+
 def tela_planejamento_gestor(c, prof, ano):
     st.markdown(f"<div class='modtag'>Planejamento do Orçamento {ano}</div>", unsafe_allow_html=True)
     st.markdown("<div class='modsub'>Preencha o orçamento por conta e mês nos seus centros de resultado. Salve rascunho e envie para a controladoria.</div>", unsafe_allow_html=True)
@@ -3091,36 +3321,50 @@ def tela_planejamento_gestor(c, prof, ano):
                 "Selecione um desses anos no seletor **Ano**, no topo da página.")
         return
     aberta = get_plan_janela(c, ano)
-    ref = carregar_orc(ano - 1) or carregar_orc(ano) or []
     EMP = {1: "PISA", 2: "KING"}
-    uni_nome = {int(r["uni_cod"]): (r.get("unidade") or "") for r in ref if r.get("uni_cod") is not None}
+    ref = carregar_orc(ano - 1) or []
+    orc_cur = carregar_orc(ano) or []
+    uni_nome = {int(r["uni_cod"]): (r.get("unidade") or "") for r in (ref + orc_cur) if r.get("uni_cod") is not None}
+    # CRs do gestor a partir do CADASTRO (cr_gestor): todos os atribuídos, com ou sem movimento
     crmap = {}
-    for r in ref:
-        if r.get("cr_cod") is not None:
-            crmap[(int(r["uni_cod"]), int(r["cr_cod"]))] = r.get("cr_nome", "")
+    for r in (carregar_cr_gestor() or []):
+        if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
+            crmap[(int(r["uni_cod"]), int(r["cr_cod"]))] = r.get("cr_nome", "") or ""
+    if not crmap:  # retrocompatível: se não houver cadastro, usa o que teve movimento
+        for r in ref:
+            if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
+                crmap.setdefault((int(r["uni_cod"]), int(r["cr_cod"])), r.get("cr_nome", "") or "")
     crs = sorted(crmap.keys())
     if not crs:
-        st.info(f"Não há estrutura de contas do ano {ano-1} nos seus centros de resultado para preencher.")
+        st.info("Você não tem centros de resultado cadastrados. Fale com a controladoria (cadastro de CRs por gestor).")
         return
-    def _fmt_cr(k):
-        emp = uni_nome.get(k[0]) or EMP.get(k[0], str(k[0]))
-        return f"{emp} · {k[1]} · {crmap[k]}"
-    cr_opt = st.selectbox("1) Escolha o centro de resultado", crs, format_func=_fmt_cr, key="plan_cr")
+    # 1) Empresa  ->  2) Centro de resultado (da empresa escolhida)
+    unis_disp = sorted({k[0] for k in crs})
+    cse = st.columns([1.2, 3])
+    uni_cod = cse[0].selectbox("1) Empresa", unis_disp,
+                               format_func=lambda u: (uni_nome.get(u) or EMP.get(u, str(u))), key="plan_uni")
+    crs_emp = [k for k in crs if k[0] == uni_cod]
+    if not crs_emp:
+        st.info("Nenhum centro de resultado atribuído a você nesta empresa.")
+        return
+    cr_opt = cse[1].selectbox("2) Centro de resultado", crs_emp, format_func=lambda k: f"{k[1]} · {crmap[k]}", key="plan_cr")
     uni_cod, cr_cod = cr_opt
     cr_nome = crmap[cr_opt]
-    # plano de contas COMPLETO (todas as contas já cadastradas) — permite orçar projeto novo
-    cat = carregar_plano_contas()
-    if cat:
-        contas_full = sorted({(int(x["conta_cod"]), x.get("conta_desc", "")) for x in cat
-                              if x.get("conta_cod") is not None and x.get("ativo", True)})
-    else:
-        contas_full = sorted({(int(r["conta_cod"]), r.get("conta_desc", "")) for r in ref
-                             if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None})
+    # CONTAS = união de TODAS as contas já vistas (plano_contas + orçado do ano e do ano-1)
+    contas_dict = {}
+    for x in (carregar_plano_contas() or []):
+        if x.get("conta_cod") is not None and x.get("ativo", True):
+            contas_dict[int(x["conta_cod"])] = x.get("conta_desc", "") or ""
+    for r in (orc_cur + ref):
+        cd = r.get("conta_cod")
+        if cd is not None:
+            contas_dict.setdefault(int(cd), r.get("conta_desc", "") or "")
+    contas_full = sorted((cod, desc) for cod, desc in contas_dict.items())
     plan_rows = carregar_orc_plan(ano)
     stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s.get("status", "RASCUNHO") for s in carregar_orc_plan_status(ano)}
     status = stt.get((uni_cod, cr_cod), "RASCUNHO")
     cor = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}.get(status, CINZA_TXT)
-    st.markdown(f"CR selecionado: <b>{cr_cod} · {cr_nome}</b> &nbsp;·&nbsp; Situação: {chip(status, cor)}", unsafe_allow_html=True)
+    st.markdown(f"Selecionado: <b>{EMP.get(uni_cod, uni_cod)} · {cr_cod} · {cr_nome}</b> &nbsp;·&nbsp; Situação: {chip(status, cor)}", unsafe_allow_html=True)
     if not aberta and status != "APROVADO":
         st.info(f"A janela de preenchimento do orçamento {ano} está fechada. Você pode consultar, mas não editar.")
     if status == "APROVADO":
@@ -3140,10 +3384,22 @@ def tela_planejamento_gestor(c, prof, ano):
                 d["m"][mm] += float(r.get("valor_realizado") or 0)
     for cod in hist:
         hist[cod]["total"] = sum(hist[cod]["m"].values())
-    st.markdown(f"<div style='font-weight:600;color:{AZUL_PROFUNDO};margin-top:6px'>2) Preencha os valores por mês e 3) envie</div>"
-                f"<div style='font-size:12px;color:{CINZA_TXT}'>Plano de contas completo — mostrando {len(contas)} de {len(contas_full)} contas. "
-                f"A coluna <b>Histórico {ano-1}</b> é referência (realizado do ano anterior). Use <b>Copiar {ano-1}</b> para preencher e ajustar.</div>", unsafe_allow_html=True)
-    _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist)
+    # histórico (realizado ano-1) por (empresa, CR, conta) — para a regra de obrigatoriedade no envio em lote
+    hist_tot = {}
+    for r in ref:
+        if r.get("conta_cod") is not None:
+            k = (int(r.get("uni_cod", 0) or 0), int(r.get("cr_cod", 0) or 0), int(r["conta_cod"]))
+            hist_tot[k] = hist_tot.get(k, 0.0) + float(r.get("valor_realizado") or 0)
+
+    etapa = st.radio("Etapa", ["1) Valores", "2) Justificativas por conta"], horizontal=True, key="plan_etapa")
+    if etapa.startswith("1"):
+        st.markdown(f"<div style='font-weight:600;color:{AZUL_PROFUNDO};margin-top:6px'>Preencha os valores por mês</div>"
+                    f"<div style='font-size:12px;color:{CINZA_TXT}'>Plano de contas completo (união de todas as contas já vistas) — "
+                    f"mostrando {len(contas)} de {len(contas_full)} contas. <b>Histórico {ano-1}</b> = realizado do ano anterior "
+                    f"(referência). Contas em zero não geram lançamento. Depois vá em “2) Justificativas por conta”.</div>", unsafe_allow_html=True)
+        _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist)
+    else:
+        secao_justif_orcamento(c, prof, ano, uni_cod, cr_cod, plan_rows, hist, editavel)
 
     # ---------- Finalizar orçamento: resumo dos CRs do gestor + envio em lote ----------
     st.divider()
@@ -3189,16 +3445,29 @@ def tela_planejamento_gestor(c, prof, ano):
                        "(CRs sem lançamento ou já enviados/aprovados são ignorados.)")
         else:
             if st.button(f"📤 Finalizar e enviar {n_fin} CR(s) para a controladoria", key="plan_fin_todos", type="primary"):
-                enviados = []
+                enviados = []; retidos = []
                 for (u, cc) in finalizaveis:
+                    pend = 0
+                    for r in plan_rows:
+                        if int(r.get("uni_cod", 0) or 0) == u and int(r.get("cr_cod", 0) or 0) == cc and r.get("conta_cod") is not None:
+                            planned = sum(float(r.get(f"m{mi}") or 0) for mi in range(1, 13))
+                            histv = hist_tot.get((u, cc, int(r["conta_cod"])), 0.0)
+                            if _exige_justif_orc(planned, histv) and not str(r.get("justificativa") or "").strip():
+                                pend += 1
+                    if pend:
+                        retidos.append(f"{cc} · {nome_cr.get((u, cc), '')} ({pend} sem justificativa)")
+                        continue
                     c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": u, "cr_cod": cc, "status": "ENVIADO",
                                                        "atualizado_por": prof.get("nome", "")},
                                                       on_conflict="ano,uni_cod,cr_cod").execute()
                     enviados.append(f"{cc} · {nome_cr.get((u, cc), '')}")
                 limpar_cache()
-                st.success("Orçamento finalizado e enviado à controladoria: " + "; ".join(enviados) +
-                           ". Para substituir algum valor agora, peça à controladoria para devolver o CR — "
-                           "aí você ajusta e reenvia.")
+                if enviados:
+                    st.success("Finalizado(s) e enviado(s): " + "; ".join(enviados) +
+                               ". Para substituir algo, peça à controladoria para devolver o CR.")
+                if retidos:
+                    st.error("Não enviados (faltam justificativas obrigatórias em contas acima de +5% do histórico): "
+                             + "; ".join(retidos) + ". Justifique na etapa “2) Justificativas por conta” de cada CR.")
                 st.rerun()
 
 def _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref):
@@ -3216,7 +3485,7 @@ def _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref):
             payloads.append(dict(ano=ano, mes=mi, uni_cod=uni, unidade=unidade, cr_cod=cr, cr_nome=cr_nome,
                                  cr_grupo=cr_grupo, conta_cod=cod, conta_desc=r.get("conta_desc", ""),
                                  tipo_conta=m.get("tipo_conta", ""), classificacao=m.get("classificacao", ""),
-                                 valor_planejado=round(float(r.get(f"m{mi}") or 0), 6)))
+                                 valor_planejado=round(float(r.get(f"m{mi}") or 0))))
     if payloads:
         c.table("orc_realizado").upsert(payloads, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute()
 
@@ -3284,13 +3553,21 @@ def tela_planejamento_ctrl(c, prof, ano):
         for yr in (ano, ano - 1):
             for x in (carregar_orc(yr) or []):
                 if x.get("conta_cod") is not None:
-                    vistos[int(x["conta_cod"])] = x.get("conta_desc", "")
-        if vistos:
-            c.table("plano_contas").upsert([{"conta_cod": k, "conta_desc": v} for k, v in vistos.items()],
-                                           on_conflict="conta_cod").execute()
-            limpar_cache(); st.success(f"{len(vistos)} conta(s) no catálogo."); st.rerun()
-        else:
+                    vistos[int(x["conta_cod"])] = x.get("conta_desc", "") or ""
+        if not vistos:
             st.info("Não há contas em orc_realizado para sincronizar.")
+        else:
+            try:
+                # não depende de constraint UNIQUE: lê o que já existe e insere só o que falta
+                existentes = {int(x["conta_cod"]) for x in (carregar_plano_contas() or []) if x.get("conta_cod") is not None}
+                novos = [{"conta_cod": k, "conta_desc": v} for k, v in vistos.items() if k not in existentes]
+                for ch in chunks(novos, 500):
+                    c.table("plano_contas").insert(ch).execute()
+                limpar_cache()
+                st.success(f"Catálogo sincronizado: {len(novos)} conta(s) nova(s) adicionada(s); {len(existentes)} já existiam.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Não foi possível sincronizar o plano de contas: {e}")
     st.divider()
 
     status_rows = carregar_orc_plan_status(ano)
@@ -3336,7 +3613,16 @@ def tela_planejamento_ctrl(c, prof, ano):
                   + "".join("<td></td>" for _ in range(1, 13)) + f"<td><b>{brl(tot_geral)}</b></td></tr>")
         st.markdown(f"<div class='scroll'><table class='lle matrix'><tr>{th}</tr>{corpo}</table></div>", unsafe_allow_html=True)
 
-    # ações
+        # justificativas do gestor por conta (subiram junto com o orçamento)
+        just_rows = [r for r in plan_cr if str(r.get("justificativa") or "").strip()]
+        with st.expander(f"📝 Justificativas do gestor por conta ({len(just_rows)})", expanded=bool(just_rows)):
+            if not just_rows:
+                st.caption("Nenhuma justificativa registrada pelo gestor neste CR.")
+            else:
+                for r in sorted(just_rows, key=lambda x: int(x.get("conta_cod", 0) or 0)):
+                    tot = sum(float(r.get(f"m{m}") or 0) for m in range(1, 13))
+                    st.markdown(f"<b>{int(r['conta_cod'])} · {r.get('conta_desc','')}</b> — orçado {brl(tot)}", unsafe_allow_html=True)
+                    st.caption(str(r.get("justificativa") or ""))
     ref = carregar_orc(ano - 1) or carregar_orc(ano) or []
     orc_ano = carregar_orc(ano) or []
     conflito = any(int(x.get("uni_cod", 0) or 0) == uni and int(x.get("cr_cod", 0) or 0) == cr
@@ -3375,6 +3661,9 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
        A grade começa com a estrutura do ano anterior + rascunho. A coluna 'Remover' zera os 12 meses
        e tira o cargo da grade (regra: quantidade > 0 = está no quadro; zerado = fora). Não apaga histórico."""
     hist = hist or {}
+    if not cargos:
+        # grade sem cargos: não renderiza o editor (colunas vazias quebram o data_editor)
+        return
     idx = {str(r["cargo_cod"]): r for r in plan_rows
            if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None}
     data = {"Cargo": [f"{cod} · {nome}" for cod, nome in cargos],
@@ -3384,6 +3673,11 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
     if editavel:
         data["Remover"] = [False for _ in cargos]
     df = pd.DataFrame(data)
+    # garante dtypes corretos (evita StreamlitAPIException de incompatibilidade de tipo)
+    for cn in [f"Hist. {ano-1}"] + [MABREV[mi] for mi in range(1, 13)]:
+        df[cn] = pd.to_numeric(df[cn], errors="coerce").fillna(0).astype(int)
+    if editavel:
+        df["Remover"] = df["Remover"].astype(bool)
     colcfg = {f"Hist. {ano-1}": st.column_config.NumberColumn(f"Hist. {ano-1} (HC)", format="%d", help="Headcount realizado do ano anterior (total do ano) — referência, não editável")}
     colcfg.update({MABREV[mi]: st.column_config.NumberColumn(f"{MABREV[mi]}", format="%d", step=1, min_value=0, help="Quantidade de funcionários planejada neste mês") for mi in range(1, 13)})
     if editavel:
@@ -3483,12 +3777,26 @@ def tela_qlp_gestor(c, prof, ano):
     cr_nome = crmap[cr_opt]
     # catálogo de cargos (para adicionar) + nomes conhecidos (catálogo + ano anterior + rascunho)
     cat = carregar_hc_cargo()
-    cargos_cat = {}
+    # catálogo = histórico amplo de cargos: tabela de cargos + todos os cargos já vistos no
+    # headcount (ano atual e anterior, qualquer CR) + os já lançados no plano. Cada cargo é
+    # identificado pelo CÓDIGO, então Jr/Pleno/Sr (códigos distintos) são cargos distintos.
+    catalogo = {}
     for x in (cat or []):
         if x.get("cargo_cod") is not None and x.get("ativo", True):
-            cargos_cat[str(x["cargo_cod"])] = x.get("cargo_nome", "")
+            catalogo[str(x["cargo_cod"])] = x.get("cargo_nome", "") or str(x["cargo_cod"])
+    for fonte in (carregar_hc_quadro(ano), carregar_hc_quadro(ano - 1),
+                  carregar_hc_custo(ano), carregar_hc_custo(ano - 1)):
+        for r in (fonte or []):
+            cc = r.get("cargo_cod")
+            if cc is not None:
+                catalogo.setdefault(str(cc), (r.get("cargo_nome") or str(cc)))
     plan_rows = carregar_qlp_plan(ano)
-    nomes = dict(cargos_cat)
+    for r in plan_rows:
+        cc = r.get("cargo_cod")
+        if cc is not None:
+            catalogo.setdefault(str(cc), (r.get("cargo_nome") or str(cc)))
+    cargos_cat = catalogo  # compatibilidade com o restante da função
+    nomes = dict(catalogo)
     for r in ref:
         if r.get("cargo_cod") is not None:
             nomes.setdefault(str(r["cargo_cod"]), r.get("cargo_nome", ""))
@@ -3534,18 +3842,21 @@ def tela_qlp_gestor(c, prof, ano):
     if membros is None:
         membros = sorted(base_cods, key=lambda x: (len(x), x)); st.session_state[mkey] = membros
 
-    # ----- adicionar cargo do catálogo à grade -----
+    # ----- adicionar cargo do catálogo/histórico à grade -----
     if editavel:
         faltantes = sorted([(cod, nomes.get(cod, cod)) for cod in cargos_cat if cod not in set(membros)],
-                           key=lambda kv: (len(kv[0]), kv[0]))
+                           key=lambda kv: ((kv[1] or "").lower(), kv[0]))
         addc = st.columns([3.4, 1.1])
-        add_sel = addc[0].selectbox("➕ Adicionar cargo do catálogo à grade", [("", "— selecione um cargo —")] + faltantes,
+        add_sel = addc[0].selectbox("➕ Adicionar cargo à grade (histórico de cargos)", [("", "— selecione um cargo —")] + faltantes,
                                     format_func=lambda kv: kv[1] if kv[0] == "" else f"{kv[0]} · {kv[1]}",
-                                    key=f"qlp_add_sel_{uni_cod}_{cr_cod}")
+                                    key=f"qlp_add_sel_{uni_cod}_{cr_cod}",
+                                    help="Lista com todos os cargos já usados na empresa. Jr/Pleno/Sr têm códigos próprios e aparecem como cargos separados.")
         if addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", disabled=(add_sel[0] == "")):
             if add_sel[0] and add_sel[0] not in membros:
                 st.session_state[mkey] = list(membros) + [add_sel[0]]
                 st.rerun()
+        if not faltantes:
+            st.caption("Todos os cargos conhecidos já estão na grade. Cargos novos entram na base pela importação de pessoal.")
 
     q = st.text_input("Filtrar cargo (código ou nome) — opcional", key="qlp_filtro")
     cargos = [(cod, nomes.get(cod, cod)) for cod in membros if (not q) or q.lower() in f"{cod} {nomes.get(cod, '')}".lower()]
@@ -3715,16 +4026,302 @@ def tela_qlp_ctrl(c, prof, ano):
         st.success(f"QLP do CR {cr} devolvido para ajuste."); st.rerun()
 
 # ---------------------------------------------------------------- main
+# ============================================================================
+# MÓDULO FORECAST / CENÁRIOS  (paralelo, só leitura sobre o orçamento oficial)
+# O cenário NUNCA grava nas tabelas do orçamento. Guarda apenas metadados
+# (forecast_cenario) e fatores de ajuste em % (forecast_fator). O valor do
+# cenário é calculado ao vivo: base (dados originais, só leitura) × (1 + %).
+# ============================================================================
+@st.cache_data(ttl=30, show_spinner=False)
+def _q_fc_cen(tok, rtok, ano):
+    cc = _cli_tok(tok, rtok)
+    try:
+        return cc.table("forecast_cenario").select("*").eq("ano", ano).eq("ativo", True).order("id", desc=True).execute().data or []
+    except Exception:
+        return []
+def carregar_fc_cenarios(ano): return _q_fc_cen(*_tok(), ano)
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _q_fc_fat(tok, rtok, cid):
+    cc = _cli_tok(tok, rtok)
+    try:
+        return cc.table("forecast_fator").select("*").eq("cenario_id", cid).order("id").execute().data or []
+    except Exception:
+        return []
+def carregar_fc_fatores(cid): return _q_fc_fat(*_tok(), cid)
+
+FC_FONTES = [("despesa", "Despesa (conta/CR)"), ("receita", "Receita Bruta"),
+             ("cmv", "CMV"), ("deducao", "Deduções")]
+FC_FONTE_LABEL = dict(FC_FONTES)
+FC_BASES = [("orcado", "Orçado (planejado)"), ("real_proj", "Realizado até o corte + orçado no restante"),
+            ("ano_anterior", "Ano anterior (realizado)")]
+FC_BASE_LABEL = dict(FC_BASES)
+
+def _fc_is_receita_conta(conta_cod):
+    return str(conta_cod)[:1] in ("3", "6")
+
+def _fc_fator_mult(fatores, fonte, mes, uni, cr=None, conta_cod=None, conta_nome=None):
+    """Produto de (1 + pct/100) de todos os fatores que se aplicam à célula."""
+    f = 1.0
+    for ft in fatores:
+        if ft.get("fonte") != fonte:
+            continue
+        if not (int(ft.get("mes_ini", 1) or 1) <= mes <= int(ft.get("mes_fim", 12) or 12)):
+            continue
+        fu = ft.get("uni_cod")
+        if fu is not None and int(fu) != int(uni):
+            continue
+        if fonte == "despesa":
+            fc = ft.get("cr_cod"); fk = ft.get("conta_cod")
+            if fc is not None and int(fc) != int(cr or 0):
+                continue
+            if fk is not None and int(fk) != int(conta_cod or 0):
+                continue
+        if fonte == "deducao":
+            fn = ft.get("conta")
+            if fn not in (None, "", conta_nome):
+                continue
+        try:
+            f *= (1.0 + float(ft.get("pct") or 0) / 100.0)
+        except (TypeError, ValueError):
+            pass
+    return f
+
+def _fc_calc(ano, cen, fatores, emp, meses):
+    """Calcula os totais (base, cenário, realizado) das linhas do comparativo.
+       Base e cenário respeitam a base escolhida; 'realizado' é sempre o realizado
+       do ano corrente (referência). Nada é gravado."""
+    base_tipo = cen.get("base_tipo", "orcado")
+    corte = int(cen.get("corte_mes") or 0)
+    ano_base = ano - 1 if base_tipo == "ano_anterior" else ano
+
+    def val_base(row, mes):
+        if base_tipo == "ano_anterior":
+            return float(row.get("valor_realizado") or 0)
+        if base_tipo == "real_proj":
+            return float(row.get("valor_realizado") or 0) if (corte and mes <= corte) else float(row.get("valor_planejado") or 0)
+        return float(row.get("valor_planejado") or 0)
+
+    acc = {k: {"base": 0.0, "cen": 0.0, "real": 0.0} for k in ("receita", "deducao", "cmv", "despesa")}
+
+    def somar(fonte, rows_base, rows_real, is_desp=False, is_ded=False):
+        for r in (rows_base or []):
+            mes = int(r.get("mes", 0) or 0)
+            if not (1 <= mes <= 12) or mes not in meses:
+                continue
+            uni = int(r.get("uni_cod", 0) or 0)
+            if emp and uni != emp:
+                continue
+            if is_desp and _fc_is_receita_conta(r.get("conta_cod")):
+                continue
+            b = val_base(r, mes)
+            cr = int(r.get("cr_cod", 0) or 0) if is_desp else None
+            conta_cod = int(r.get("conta_cod", 0) or 0) if is_desp else None
+            conta_nome = r.get("conta") if is_ded else None
+            mult = _fc_fator_mult(fatores, fonte, mes, uni, cr, conta_cod, conta_nome)
+            acc[fonte]["base"] += b
+            acc[fonte]["cen"] += b * mult
+        for r in (rows_real or []):
+            mes = int(r.get("mes", 0) or 0)
+            if not (1 <= mes <= 12) or mes not in meses:
+                continue
+            uni = int(r.get("uni_cod", 0) or 0)
+            if emp and uni != emp:
+                continue
+            if is_desp and _fc_is_receita_conta(r.get("conta_cod")):
+                continue
+            acc[fonte]["real"] += float(r.get("valor_realizado") or 0)
+
+    somar("receita", carregar_receita(ano_base), carregar_receita(ano))
+    somar("deducao", carregar_deducao(ano_base), carregar_deducao(ano), is_ded=True)
+    somar("cmv", carregar_cmv(ano_base), carregar_cmv(ano))
+    somar("despesa", carregar_orc(ano_base), carregar_orc(ano), is_desp=True)
+
+    def trio(k): return acc[k]
+    def diff(a, b): return {s: a[s] - b[s] for s in ("base", "cen", "real")}
+    rb, ded, cmv, desp = trio("receita"), trio("deducao"), trio("cmv"), trio("despesa")
+    rl = diff(rb, ded)
+    lb = diff(rl, cmv)
+    res = diff(lb, desp)
+    linhas = [
+        ("Receita Bruta", rb, "rev", False),
+        ("(−) Deduções", ded, "cost", False),
+        ("(=) Receita Líquida", rl, "rev", True),
+        ("(−) CMV", cmv, "cost", False),
+        ("(=) Lucro Bruto", lb, "rev", True),
+        ("(−) Despesas (orçamento)", desp, "cost", False),
+        ("(=) Resultado (antes de pessoal e financeiro)", res, "rev", True),
+    ]
+    return linhas
+
+def tela_forecast(c, prof, ano):
+    EMP = {1: "PISA", 2: "KING"}
+    st.markdown("<div class='modtag'>Forecast / Cenários</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Projeções paralelas ao orçamento. Um cenário parte dos dados atuais e aplica "
+                "ajustes em %. O orçamento oficial permanece intocado — nada aqui grava sobre ele.</div>", unsafe_allow_html=True)
+    st.info("🔒 Este módulo é isolado: os cenários leem os números do orçamento apenas como base de cálculo e guardam "
+            "somente os seus próprios ajustes. Receita, CMV, deduções e despesas originais não são alterados.")
+
+    # ---------- criar novo cenário ----------
+    with st.expander("➕ Novo cenário", expanded=False):
+        nome = st.text_input("Nome do cenário", key="fc_novo_nome", placeholder="Ex.: Revisão jun, Otimista, Corte 10%")
+        desc = st.text_input("Descrição (opcional)", key="fc_novo_desc")
+        base_tipo = st.radio("Base de partida", [b[0] for b in FC_BASES],
+                             format_func=lambda k: FC_BASE_LABEL[k], key="fc_novo_base")
+        corte = None
+        if base_tipo == "real_proj":
+            corte = int(st.selectbox("Mês de corte (realizado até aqui; orçado a partir do mês seguinte)",
+                                     list(range(1, 13)), index=5, format_func=lambda m: MESES[m], key="fc_novo_corte"))
+        if st.button("Criar cenário", type="primary", key="fc_criar", disabled=(not nome.strip())):
+            try:
+                c.table("forecast_cenario").insert({
+                    "ano": int(ano), "nome": nome.strip(), "descricao": desc.strip() or None,
+                    "base_tipo": base_tipo, "corte_mes": corte, "criado_por": prof.get("nome", "")}).execute()
+                limpar_cache(); st.success("Cenário criado."); st.rerun()
+            except Exception as e:
+                st.error(f"Não foi possível criar o cenário: {e}")
+
+    cenarios = carregar_fc_cenarios(ano)
+    if not cenarios:
+        st.caption(f"Nenhum cenário para {ano} ainda. Crie o primeiro em “Novo cenário”.")
+        return
+
+    # ---------- escolher cenário ----------
+    opt = {int(x["id"]): x for x in cenarios}
+    cid = st.selectbox("Cenário", list(opt.keys()),
+                       format_func=lambda i: f"{opt[i]['nome']}  ·  base: {FC_BASE_LABEL.get(opt[i].get('base_tipo'),'')}"
+                                             + (f" (corte {MESES[int(opt[i]['corte_mes'])]})" if opt[i].get('corte_mes') else ""),
+                       key="fc_sel")
+    cen = opt[cid]
+    fatores = carregar_fc_fatores(cid)
+
+    csub = st.columns([4, 1])
+    if cen.get("descricao"):
+        csub[0].caption(f"📝 {cen['descricao']}")
+    if csub[1].button("🗑️ Excluir cenário", key="fc_del_cen"):
+        try:
+            c.table("forecast_cenario").delete().eq("id", cid).execute()  # fatores caem por cascade
+            limpar_cache(); st.success("Cenário excluído (o orçamento não foi afetado)."); st.rerun()
+        except Exception as e:
+            st.error(f"Não foi possível excluir: {e}")
+
+    # ---------- adicionar fator de ajuste ----------
+    st.divider()
+    st.markdown("#### Ajustes em massa (fatores %)")
+    st.caption("Cada ajuste multiplica a base pelo percentual, no escopo e período escolhidos. Ex.: “Despesa · KING · "
+               "jul–dez · −10%”. Percentual negativo reduz; positivo aumenta. Vários ajustes se acumulam.")
+    orc_rows = carregar_orc(ano) or []
+    crs = sorted({(int(r["cr_cod"]), r.get("cr_nome", "")) for r in orc_rows if not _fc_is_receita_conta(r.get("conta_cod"))})
+    contas = sorted({(int(r["conta_cod"]), r.get("conta_desc", "")) for r in orc_rows if not _fc_is_receita_conta(r.get("conta_cod"))})
+
+    fc = st.columns([1.3, 1.1, 1.1])
+    fonte = fc[0].selectbox("Fonte", [f[0] for f in FC_FONTES], format_func=lambda k: FC_FONTE_LABEL[k], key="fc_ff")
+    empf = fc[1].selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="fc_femp")
+    pct = fc[2].number_input("Percentual (%)", value=-10.0, step=1.0, format="%.2f", key="fc_fpct")
+    cr_sel = conta_sel = 0; ded_sel = "Todas"
+    if fonte == "despesa":
+        fc2 = st.columns([2, 2])
+        cr_sel = fc2[0].selectbox("Centro de resultado", [0] + [x[0] for x in crs],
+                                  format_func=lambda x: "Todos" if x == 0 else f"{x} · {dict(crs).get(x,'')}", key="fc_fcr")
+        conta_sel = fc2[1].selectbox("Conta", [0] + [x[0] for x in contas],
+                                     format_func=lambda x: "Todas" if x == 0 else f"{x} · {dict(contas).get(x,'')}", key="fc_fconta")
+    elif fonte == "deducao":
+        ded_sel = st.selectbox("Dedução", ["Todas"] + DEDUCOES, key="fc_fded")
+    fc3 = st.columns([1.1, 1.1, 2.6])
+    mi = int(fc3[0].selectbox("Mês inicial", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="fc_fmi"))
+    mf = int(fc3[1].selectbox("Mês final", list(range(1, 13)), index=11, format_func=lambda m: MESES[m], key="fc_fmf"))
+    fdesc = fc3[2].text_input("Descrição do ajuste (opcional)", key="fc_fdesc")
+    if st.button("Adicionar ajuste", type="primary", key="fc_add_fat", disabled=(mi > mf or pct == 0)):
+        payload = {"cenario_id": cid, "fonte": fonte, "mes_ini": mi, "mes_fim": mf,
+                   "pct": float(pct), "descricao": (fdesc.strip() or None), "criado_por": prof.get("nome", ""),
+                   "uni_cod": (empf or None), "cr_cod": None, "conta_cod": None, "conta": None}
+        if fonte == "despesa":
+            payload["cr_cod"] = (cr_sel or None); payload["conta_cod"] = (conta_sel or None)
+        elif fonte == "deducao":
+            payload["conta"] = (None if ded_sel == "Todas" else ded_sel)
+        try:
+            c.table("forecast_fator").insert(payload).execute()
+            limpar_cache(); st.success("Ajuste adicionado."); st.rerun()
+        except Exception as e:
+            st.error(f"Não foi possível adicionar o ajuste: {e}")
+    if mi > mf:
+        st.warning("O mês inicial não pode ser maior que o mês final.")
+
+    # ---------- lista de fatores ----------
+    if fatores:
+        st.markdown("###### Ajustes deste cenário")
+        for ft in fatores:
+            escopo = [FC_FONTE_LABEL.get(ft.get("fonte"), ft.get("fonte"))]
+            if ft.get("uni_cod"): escopo.append(EMP.get(int(ft["uni_cod"]), str(ft["uni_cod"])))
+            else: escopo.append("Todas as empresas")
+            if ft.get("cr_cod"): escopo.append(f"CR {ft['cr_cod']}")
+            if ft.get("conta_cod"): escopo.append(f"conta {ft['conta_cod']}")
+            if ft.get("conta"): escopo.append(ft["conta"])
+            pcttxt = f"{float(ft.get('pct') or 0):+.2f}%".replace(".", ",")
+            per = f"{MABREV[int(ft.get('mes_ini',1))]}–{MABREV[int(ft.get('mes_fim',12))]}"
+            cor = VERDE if float(ft.get("pct") or 0) < 0 else VERMELHO
+            row = st.columns([7, 1])
+            row[0].markdown(f"• <b style='color:{cor}'>{pcttxt}</b> · {' · '.join(escopo)} · {per}"
+                            + (f" — <i>{ft['descricao']}</i>" if ft.get("descricao") else ""), unsafe_allow_html=True)
+            if row[1].button("Remover", key=f"fc_delfat_{ft['id']}"):
+                try:
+                    c.table("forecast_fator").delete().eq("id", int(ft["id"])).execute()
+                    limpar_cache(); st.rerun()
+                except Exception as e:
+                    st.error(f"Não foi possível remover: {e}")
+    else:
+        st.caption("Nenhum ajuste ainda — sem ajustes, o cenário é igual à base.")
+
+    # ---------- comparativo Base × Cenário × Realizado ----------
+    st.divider()
+    st.markdown("#### Comparativo")
+    cco = st.columns([1.3, 2.4])
+    emp_cmp = cco[0].selectbox("Empresa", [0, 1, 2], format_func=lambda x: "Todas" if x == 0 else EMP[x], key="fc_cmp_emp")
+    visao = cco[1].radio("Período", ["Ano inteiro", "Até um mês", "Intervalo"], horizontal=True, key="fc_cmp_visao")
+    if visao == "Até um mês":
+        m_ate = int(st.selectbox("Até", list(range(1, 13)), index=11, format_func=lambda m: MESES[m], key="fc_cmp_ate"))
+        meses = list(range(1, m_ate + 1))
+    elif visao == "Intervalo":
+        ci = st.columns(2)
+        m1 = int(ci[0].selectbox("De", list(range(1, 13)), index=0, format_func=lambda m: MESES[m], key="fc_cmp_de"))
+        m2 = int(ci[1].selectbox("Até", list(range(1, 13)), index=11, format_func=lambda m: MESES[m], key="fc_cmp_ateb"))
+        meses = list(range(min(m1, m2), max(m1, m2) + 1))
+    else:
+        meses = list(range(1, 13))
+
+    linhas = _fc_calc(ano, cen, fatores, emp_cmp, meses)
+    corpo = ""
+    for nome, tri, tipo, forte in linhas:
+        b0, b1 = ("<b>", "</b>") if forte else ("", "")
+        base_v = tri["base"]; cen_v = tri["cen"]; real_v = tri["real"]
+        dcen = cen_v - base_v
+        dpct = (dcen / base_v * 100) if base_v else 0.0
+        cor = CINZA_TXT if abs(dpct) < 0.05 else ((VERDE if dcen >= 0 else VERMELHO) if tipo == "rev" else (VERMELHO if dcen > 0 else VERDE))
+        cls = " class='mark'" if forte else ""
+        corpo += (f"<tr{cls}><td style='text-align:left'>{b0}{nome}{b1}</td>"
+                  f"<td>{b0}{brl(base_v)}{b1}</td><td>{b0}{brl(cen_v)}{b1}</td>"
+                  f"<td style='color:{cor}'>{b0}{brl(dcen)}{b1}</td>"
+                  f"<td style='color:{cor}'>{b0}{pct_txt(dpct)}{b1}</td>"
+                  f"<td style='color:{CINZA_TXT}'>{brl(real_v)}</td></tr>")
+    th = ("<th style='text-align:left'>Linha</th><th>Base</th><th>Cenário</th>"
+          "<th>Δ Cenário</th><th>Δ %</th><th>Realizado (ref.)</th>")
+    st.markdown(f"<div class='scroll'><table class='lle matrix'><tr>{th}</tr>{corpo}</table></div>", unsafe_allow_html=True)
+    st.caption(f"Base: {FC_BASE_LABEL.get(cen.get('base_tipo'),'')}"
+               + (f" · corte em {MESES[int(cen['corte_mes'])]}" if cen.get('corte_mes') else "")
+               + ". “Realizado (ref.)” é o realizado do ano corrente, apenas para comparação. Pessoal e resultado "
+               "financeiro não entram neste cenário (fora do escopo escolhido).")
+
 SECOES_CTRL = [
     ("Acompanhamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
                         ("justif", "📥 Justificativas recebidas")]),
-    ("Demonstrativos", [("dre", "📈 DRE")]),
+    ("Demonstrativos", [("dre", "📈 DRE"), ("forecast", "🔮 Forecast / Cenários")]),
     ("Orçamento", [("receita", "💰 Receita de Vendas"), ("deducao", "➖ Deduções de Vendas"),
                    ("cmv", "🧾 CMV"), ("investimento", "🏗️ Investimentos"),
                    ("plan", "🧭 Planejamento (orçamento)"), ("manut", "✏️ Manutenção Orçamento")]),
     ("Pessoal", [("pessoal", "👥 Gastos com Pessoal"),
                  ("qlp", "🧭 Planejamento de Pessoal (QLP)")]),
-    ("Administração", [("importar", "⬆️ Importar dados"), ("admin", "🔑 Administração de acessos")]),
+    ("Administração", [("importar", "⬆️ Importar dados"), ("crconfig", "🏢 Unidades de negócio / Config DRE"),
+                       ("admin", "🔑 Administração de acessos")]),
 ]
 SECOES_GESTOR = [
     ("Acompanhamento", [("acomp", "📊 Acompanhamento (orçado x realizado)"),
@@ -3733,6 +4330,70 @@ SECOES_GESTOR = [
     ("Pessoal", [("pessoal", "👥 Gastos com Pessoal (meu CR)"),
                  ("qlp", "🧭 Planejamento de Pessoal (QLP)")]),
 ]
+
+def tela_cr_corporativo(c, prof, ano):
+    st.markdown("<div class='modtag'>Unidades de negócio / Configuração da DRE</div>", unsafe_allow_html=True)
+    st.markdown("<div class='modsub'>Configurações da DRE em um só lugar: os centros de resultado que compõem a "
+                "unidade Corporativo e o mapeamento das contas do orçamento para as linhas da DRE.</div>", unsafe_allow_html=True)
+    orc = carregar_orc(ano) or []
+    EMPn = {1: "PISA", 2: "KING"}
+
+    # ---- 1) CRs corporativos ----
+    st.markdown("#### 1) Centros de resultado da unidade Corporativo")
+    st.caption("Marque os CRs que atendem ao corporativo. Na DRE “Por unidade”, as despesas e o pessoal desses CRs "
+               "aparecem numa coluna Corporativo, saindo de PISA/KING — apenas na visualização. Nenhum valor é alterado.")
+    crmap = {}
+    for x in orc:
+        cd = x.get("cr_cod")
+        if cd is None:
+            continue
+        cd = int(cd)
+        crmap.setdefault(cd, {"nome": x.get("cr_nome", "") or "", "unis": set()})
+        u = int(x.get("uni_cod", 0) or 0)
+        if u:
+            crmap[cd]["unis"].add(u)
+    atuais = get_cr_corporativos(c)
+    if not crmap:
+        st.info("Nenhum centro de resultado no orçamento deste ano ainda. Importe o orçamento primeiro.")
+    else:
+        opts = sorted(crmap.keys())
+        def _lbl(cd):
+            info = crmap[cd]
+            emps = "/".join(EMPn.get(u, str(u)) for u in sorted(info["unis"])) or "—"
+            return f"{cd} · {info['nome']} ({emps})"
+        sel = st.multiselect("CRs corporativos", opts, default=[cd for cd in opts if cd in atuais],
+                             format_func=_lbl, key="crcorp_ms")
+        if st.button("Salvar CRs corporativos", type="primary", key="crcorp_save"):
+            set_cr_corporativos(c, sel); limpar_cache()
+            st.success(f"{len(sel)} CR(s) marcado(s) como corporativo. A DRE por unidade já reflete a mudança."); st.rerun()
+        fora = sorted(cd for cd in atuais if cd not in crmap)
+        if fora:
+            st.caption("Também marcados, mas sem lançamento no orçamento deste ano: " + ", ".join(str(x) for x in fora))
+
+    st.divider()
+    # ---- 2) Mapeamento de contas para a DRE ----
+    st.markdown("#### 2) Mapeamento de contas do orçamento para a DRE")
+    mapa = {int(x["conta_cod"]): x.get("linha") for x in (carregar_dre_mapa() or []) if x.get("conta_cod") is not None}
+    desc_por_cod = {}
+    for x in orc:
+        cod = x.get("conta_cod")
+        if cod is None:
+            continue
+        cod = int(cod); d = str(x.get("conta_desc", "") or "").strip()
+        desc_por_cod.setdefault(cod, [])
+        if d and d not in desc_por_cod[cod]:
+            desc_por_cod[cod].append(d)
+    contas = sorted((cod, " / ".join(ds) if ds else "") for cod, ds in desc_por_cod.items())
+    colididos = {cod: ds for cod, ds in desc_por_cod.items() if len(ds) > 1}
+    if not contas:
+        st.caption("Nenhuma conta de orçamento carregada para este ano.")
+    else:
+        if colididos:
+            aviso = "; ".join(f"{cod} ({' / '.join(ds)})" for cod, ds in sorted(colididos.items()))
+            st.warning("Estes códigos aparecem no orçamento com **mais de uma descrição** — o sistema os trata como "
+                       "uma única conta (soma tudo sob o código). Se forem contas diferentes, corrija o código na "
+                       f"origem (ERP/plano de contas): {aviso}.")
+        _mapa_dre_frag(contas, mapa, c, prof)
 
 def barra_lateral(prof, secoes):
     """Menu lateral setorizado com a logo LLE. Retorna a chave da tela ativa."""
@@ -3821,6 +4482,7 @@ def render_app(c, prof):
         if nav == "acomp":        tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes)
         elif nav == "justif":     tela_painel(c, prof, banda, df_orc, cg, ano, mes)
         elif nav == "dre":        tela_dre(c, prof, ano)
+        elif nav == "forecast":   tela_forecast(c, prof, ano)
         elif nav == "receita":    tela_receita(c, prof, ano)
         elif nav == "deducao":    tela_deducao(c, prof, ano)
         elif nav == "cmv":        tela_cmv(c, prof, ano)
@@ -3830,6 +4492,7 @@ def render_app(c, prof):
         elif nav == "plan":       tela_planejamento_ctrl(c, prof, ano)
         elif nav == "qlp":        tela_qlp_ctrl(c, prof, ano)
         elif nav == "admin":      tela_admin(c, prof, ano)
+        elif nav == "crconfig":   tela_cr_corporativo(c, prof, ano)
         elif nav == "importar":   tela_importar(c, ano)
     else:
         if nav == "justif":
