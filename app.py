@@ -973,7 +973,7 @@ def _edicao_pessoal_frag(qf, kf, mes, uni_sel, cr_sel, c, prof):
                 an, me, uni, cr, cgo = kk
                 match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo)
                 for coluna, novos, orig in (("qtd_orcada", no, oqo), ("qtd_realizada", nr, oqr)):
-                    try: nv = round(float(novos[i]), 2)
+                    try: nv = round(float(novos[i]), 6)
                     except (TypeError, ValueError): continue
                     if abs(nv - orig[i]) > 0.005:
                         c.table("hc_quadro").update({coluna: nv}).match(match).execute()
@@ -986,7 +986,7 @@ def _edicao_pessoal_frag(qf, kf, mes, uni_sel, cr_sel, c, prof):
                 an, me, uni, cr, cgo, cat = kk
                 match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat)
                 for coluna, novos, orig in (("valor_orcado", no, oko), ("valor_realizado", nr, okr)):
-                    try: nv = round(float(novos[i]), 2)
+                    try: nv = round(float(novos[i]), 6)
                     except (TypeError, ValueError): continue
                     if abs(nv - orig[i]) > 0.005:
                         c.table("hc_custo").update({coluna: nv}).match(match).execute()
@@ -1182,10 +1182,10 @@ def tela_headcount(c, prof, ano, mes, somente_leitura=False):
                         nome_q = prof.get("nome", "")
                         for _, r in sel.iterrows():
                             antigo = round(float(r["valor_orcado"]), 2)
-                            novo = round(antigo * fator, 2)
+                            novo = round(antigo * fator, 6)
                             if novo == antigo: continue
                             rlz_raw = pd.to_numeric(r.get("valor_realizado"), errors="coerce")
-                            rlz = round(float(rlz_raw), 2) if pd.notna(rlz_raw) else 0.0
+                            rlz = round(float(rlz_raw), 6) if pd.notna(rlz_raw) else 0.0
                             an = int(r.get("ano") or ano); me = int(r["mes"]); uni = int(r["uni_cod"])
                             cr = int(r.get("cr_cod") or 0); cgo = str(r.get("cargo_cod")); cat = r["categoria"]
                             updates.append(dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, cargo_cod=cgo, categoria=cat,
@@ -1394,6 +1394,27 @@ def tela_importar(c, ano):
                 total = sum(num(cv(r, rub)) for rub in rubricas)
                 custo.append({**dim, "categoria": cat, vcol: total,
                               outro_v: exist_v.get((an, me, uni, cr, cgo, cat), 0)})
+        # --- Aviso defensivo: colunas numéricas que o sistema NÃO reconhece ---
+        # Evita repetir o caso de uma rubrica com nome fora do padrão (ex.: SALARIO_UNITARIO
+        # em vez de SALARIO_TOTAL) sumir da carga silenciosamente. Não bloqueia a importação.
+        mapeadas = {norm(x) for x in HC_COLS_DIM}
+        for _rubs in HC_MAP.values():
+            mapeadas |= {norm(x) for x in _rubs}
+        ignoradas = []
+        for col in df.columns:
+            if norm(col) in mapeadas:
+                continue
+            serie = pd.to_numeric(df[col], errors="coerce")
+            soma = float(serie.fillna(0).sum())
+            if abs(soma) > 0.005:
+                ignoradas.append((str(col), soma))
+        if ignoradas:
+            ignoradas.sort(key=lambda t: -abs(t[1]))
+            det = "; ".join(f"{nome} = {brl(v)}" for nome, v in ignoradas)
+            st.warning("⚠️ A planilha tem coluna(s) numérica(s) que o sistema **não reconhece** e que "
+                       "**não entraram** na carga (não constam no mapa de rubricas HC_MAP): " + det +
+                       ". Se alguma for custo de pessoal, renomeie na planilha para a rubrica correta "
+                       "(ex.: SALARIO_TOTAL) e reimporte — ou me avise para incluí-la no mapa.")
         salvar_cargos(cargos)
         for ch in chunks(quadro):
             c.table("hc_quadro").upsert(ch, on_conflict="ano,mes,uni_cod,cr_cod,cargo_cod").execute()
@@ -1605,7 +1626,7 @@ def _edicao_orcado_frag(view, ano, mes, uni_sel, cr_sel, conta_sel, c, prof):
             an, me, uni, cr, ct = kkey
             match = dict(ano=an, mes=me, uni_cod=uni, cr_cod=cr, conta_cod=ct)
             for coluna, novos, orig in (("valor_planejado", novos_o, orig_o), ("valor_realizado", novos_r, orig_r)):
-                try: nv = round(float(novos[i]), 2)
+                try: nv = round(float(novos[i]), 6)
                 except (TypeError, ValueError): continue
                 if abs(nv - orig[i]) > 0.005:
                     c.table("orc_realizado").update({coluna: nv}).match(match).execute()
@@ -1715,7 +1736,7 @@ def _registro_mensal_frag(tabela, tabela_log, log_loader, dfr, emp, ano, c, prof
     if st.button(f"Salvar {rotulo}", key=f"{tabela}_save", type="primary"):
         np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"]); mudou = 0
         for i, (m, u) in enumerate(keys):
-            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
+            try: p_novo = round(float(np_[i]), 6); r_novo = round(float(nr_[i]), 6)
             except (TypeError, ValueError): continue
             mud_p = abs(p_novo - oplan[i]) > 0.005; mud_r = abs(r_novo - oreal[i]) > 0.005
             if not (mud_p or mud_r): continue
@@ -1905,7 +1926,7 @@ def _registro_deducao_frag(dfr, emp, conta, ano, c, prof):
     if st.button("Salvar deduções", key="ded_save", type="primary"):
         np_, nr_ = list(ed["Planejado"]), list(ed["Realizado"]); mudou = 0
         for i, (m, u) in enumerate(keys):
-            try: p_novo = round(float(np_[i]), 2); r_novo = round(float(nr_[i]), 2)
+            try: p_novo = round(float(np_[i]), 6); r_novo = round(float(nr_[i]), 6)
             except (TypeError, ValueError): continue
             mud_p = abs(p_novo - oplan[i]) > 0.005; mud_r = abs(r_novo - oreal[i]) > 0.005
             if not (mud_p or mud_r): continue
@@ -2878,7 +2899,7 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
         return
     b = st.columns([1, 1.3, 1.5, 2])
     salvar = b[0].button("💾 Salvar rascunho", key=f"plan_sv_{uni_cod}_{cr_cod}")
-    enviar = b[1].button("📤 Enviar para controladoria", key=f"plan_en_{uni_cod}_{cr_cod}", type="primary")
+    enviar = b[1].button("📤 Finalizar e enviar este CR", key=f"plan_en_{uni_cod}_{cr_cod}", type="primary")
     copiar = b[2].button(f"📋 Copiar {ano-1}", key=f"plan_cp_{uni_cod}_{cr_cod}",
                          help=f"Preenche os 12 meses com o realizado de {ano-1} (das contas que têm histórico). Depois é só ajustar.")
     if copiar:
@@ -2892,7 +2913,7 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
                 row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                        "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", "")}
                 for mi in range(1, 13):
-                    row[f"m{mi}"] = round(float(hm.get(mi, 0) or 0), 2)
+                    row[f"m{mi}"] = round(float(hm.get(mi, 0) or 0), 6)
                 c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute(); n += 1
             c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": "RASCUNHO",
                                                "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
@@ -2906,13 +2927,17 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                    "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", "")}
             for mi in range(1, 13):
-                row[f"m{mi}"] = round(float(ed[MABREV[mi]].iloc[i] or 0), 2)
+                row[f"m{mi}"] = round(float(ed[MABREV[mi]].iloc[i] or 0), 6)
             c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
         novo = "ENVIADO" if enviar else "RASCUNHO"
         c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": novo,
                                            "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
         limpar_cache()
-        st.success("Enviado à controladoria." if enviar else "Rascunho salvo.")
+        if enviar:
+            st.success("CR finalizado e enviado à controladoria. Para substituir algum valor agora, "
+                       "a controladoria precisa devolver o CR — aí você ajusta e reenvia.")
+        else:
+            st.success("Rascunho salvo.")
         st.rerun()
 
 def tela_planejamento_gestor(c, prof, ano):
@@ -2978,6 +3003,62 @@ def tela_planejamento_gestor(c, prof, ano):
                 f"A coluna <b>Histórico {ano-1}</b> é referência (realizado do ano anterior). Use <b>Copiar {ano-1}</b> para preencher e ajustar.</div>", unsafe_allow_html=True)
     _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist)
 
+    # ---------- Finalizar orçamento: resumo dos CRs do gestor + envio em lote ----------
+    st.divider()
+    with st.container(border=True):
+        st.markdown(f"<div style='font-weight:700;color:{AZUL_PROFUNDO}'>✅ Finalizar orçamento {ano}</div>", unsafe_allow_html=True)
+        st.caption("Resumo de todos os seus centros de resultado. Você pode enviar de uma vez todos os que estão em "
+                   "rascunho ou devolvidos (e já têm valores lançados), ou usar o botão de enviar de cada CR acima. "
+                   "Depois de finalizado, para substituir um valor a controladoria precisa devolver o CR — aí você ajusta e reenvia.")
+        # total orçado por (uni, cr) a partir do orc_plan já salvo
+        tot_plan = {}
+        for rr in plan_rows:
+            k = (int(rr.get("uni_cod", 0) or 0), int(rr.get("cr_cod", 0) or 0))
+            tot_plan[k] = tot_plan.get(k, 0.0) + sum(float(rr.get(f"m{mi}") or 0) for mi in range(1, 13))
+        nome_cr = dict(crmap)
+        for rr in plan_rows:
+            k = (int(rr.get("uni_cod", 0) or 0), int(rr.get("cr_cod", 0) or 0))
+            nome_cr.setdefault(k, rr.get("cr_nome", ""))
+        def _fmt2(k):
+            emp = uni_nome.get(k[0]) or EMP.get(k[0], str(k[0]))
+            return f"{emp} · {k[1]} · {nome_cr.get(k, '')}"
+        cor_st = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE,
+                  "DEVOLVIDO": VERMELHO, "SEM LANÇAMENTO": CINZA_TXT}
+        todos_cr = sorted(set(crs) | set(tot_plan.keys()))
+        linhas = ""; finalizaveis = []
+        for k in todos_cr:
+            s = stt.get(k, "RASCUNHO")
+            tot = tot_plan.get(k, 0.0)
+            tem = abs(tot) > 0.005 or k in tot_plan
+            s_disp = s if tem else "SEM LANÇAMENTO"
+            if tem and s in ("RASCUNHO", "DEVOLVIDO"):
+                finalizaveis.append(k)
+            linhas += (f"<tr><td style='text-align:left'>{_fmt2(k)}</td>"
+                       f"<td style='text-align:center'>{chip(s_disp, cor_st.get(s_disp, CINZA_TXT))}</td>"
+                       f"<td>{brl(tot)}</td></tr>")
+        st.markdown(f"<div class='scroll'><table class='lle'><tr><th style='text-align:left'>Centro de resultado</th>"
+                    f"<th style='text-align:center'>Situação</th><th>Total orçado</th></tr>{linhas}</table></div>",
+                    unsafe_allow_html=True)
+        n_fin = len(finalizaveis)
+        if not aberta:
+            st.info("Janela de preenchimento fechada — não é possível finalizar/enviar agora.")
+        elif n_fin == 0:
+            st.caption("Nenhum CR em rascunho/devolvido com valores lançados para finalizar. "
+                       "(CRs sem lançamento ou já enviados/aprovados são ignorados.)")
+        else:
+            if st.button(f"📤 Finalizar e enviar {n_fin} CR(s) para a controladoria", key="plan_fin_todos", type="primary"):
+                enviados = []
+                for (u, cc) in finalizaveis:
+                    c.table("orc_plan_status").upsert({"ano": ano, "uni_cod": u, "cr_cod": cc, "status": "ENVIADO",
+                                                       "atualizado_por": prof.get("nome", "")},
+                                                      on_conflict="ano,uni_cod,cr_cod").execute()
+                    enviados.append(f"{cc} · {nome_cr.get((u, cc), '')}")
+                limpar_cache()
+                st.success("Orçamento finalizado e enviado à controladoria: " + "; ".join(enviados) +
+                           ". Para substituir algum valor agora, peça à controladoria para devolver o CR — "
+                           "aí você ajusta e reenvia.")
+                st.rerun()
+
 def _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref):
     """Grava o planejamento aprovado em orc_realizado[valor_planejado] (12 linhas por conta).
        Preserva valor_realizado (não é enviado no payload)."""
@@ -2993,9 +3074,47 @@ def _consolidar_plan(c, ano, uni, cr, cr_nome, plan_cr, ref):
             payloads.append(dict(ano=ano, mes=mi, uni_cod=uni, unidade=unidade, cr_cod=cr, cr_nome=cr_nome,
                                  cr_grupo=cr_grupo, conta_cod=cod, conta_desc=r.get("conta_desc", ""),
                                  tipo_conta=m.get("tipo_conta", ""), classificacao=m.get("classificacao", ""),
-                                 valor_planejado=round(float(r.get(f"m{mi}") or 0), 2)))
+                                 valor_planejado=round(float(r.get(f"m{mi}") or 0), 6)))
     if payloads:
         c.table("orc_realizado").upsert(payloads, on_conflict="ano,mes,uni_cod,cr_cod,conta_cod").execute()
+
+def _painel_finalizacao_gestor(status_rows, ano, modulo):
+    """Painel da controladoria: por gestor, quantos CRs foram finalizados (ENVIADO/APROVADO)
+       e quantos ainda faltam. Cruza cr_gestor (universo esperado) com o status do módulo."""
+    stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s.get("status", "") for s in (status_rows or [])}
+    _EMP = {1: "PISA", 2: "KING"}
+    porg = {}
+    for r in (carregar_cr_gestor() or []):
+        u = int(r.get("uni_cod", 0) or 0); crc = int(r.get("cr_cod", 0) or 0)
+        gn = (r.get("gestor") or {}).get("nome", "") if isinstance(r.get("gestor"), dict) else ""
+        gn = gn or "— (sem gestor)"
+        s = stt.get((u, crc), "NÃO INICIADO")
+        d = porg.setdefault(gn, {"crs": [], "fin": 0, "pend": 0})
+        d["crs"].append((u, crc, r.get("cr_nome", ""), s))
+        if s in ("ENVIADO", "APROVADO"):
+            d["fin"] += 1
+        else:
+            d["pend"] += 1
+    if not porg:
+        st.caption("Nenhum vínculo gestor↔CR cadastrado para acompanhar a finalização.")
+        return
+    n_ok = sum(1 for g in porg if porg[g]["pend"] == 0)
+    kc = st.columns(3)
+    kc[0].metric("Gestores", len(porg))
+    kc[1].metric(f"Finalizaram o {modulo}", n_ok)
+    kc[2].metric("Ainda faltam", len(porg) - n_ok)
+    cor_st = {"APROVADO": VERDE, "ENVIADO": AZUL_CORP, "RASCUNHO": "#EF9F27",
+              "DEVOLVIDO": VERMELHO, "NÃO INICIADO": VERMELHO}
+    for gn in sorted(porg, key=lambda g: (porg[g]["pend"] == 0, g)):
+        d = porg[gn]
+        tag = "✅ finalizou tudo" if d["pend"] == 0 else f"⏳ faltam {d['pend']} de {len(d['crs'])}"
+        with st.expander(f"{gn} — {d['fin']}/{len(d['crs'])} CR(s) finalizado(s) · {tag}"):
+            linhas = ""
+            for u, crc, crn, s in sorted(d["crs"], key=lambda x: x[1]):
+                linhas += (f"<tr><td style='text-align:left'>{_EMP.get(u, u)} · {crc} · {crn}</td>"
+                           f"<td style='text-align:center'>{chip(s, cor_st.get(s, CINZA_TXT))}</td></tr>")
+            st.markdown(f"<div class='scroll'><table class='lle'><tr><th style='text-align:left'>Centro de resultado</th>"
+                        f"<th style='text-align:center'>Situação</th></tr>{linhas}</table></div>", unsafe_allow_html=True)
 
 def tela_planejamento_ctrl(c, prof, ano):
     st.markdown(f"<div class='modtag'>Planejamento do Orçamento {ano}</div>", unsafe_allow_html=True)
@@ -3033,6 +3152,9 @@ def tela_planejamento_ctrl(c, prof, ano):
     st.divider()
 
     status_rows = carregar_orc_plan_status(ano)
+    with st.expander("📋 Finalização por gestor (orçamento)", expanded=True):
+        _painel_finalizacao_gestor(status_rows, ano, "orçamento")
+    st.divider()
     if not status_rows:
         st.info("Nenhum gestor iniciou o preenchimento ainda.")
         return
@@ -3106,8 +3228,10 @@ def tela_planejamento_ctrl(c, prof, ano):
         st.success(f"CR {cr} devolvido para ajuste."); st.rerun()
 
 # ---------------------------------------------------------------- QLP (planejamento de pessoal / headcount)
-def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist=None):
-    """Grade de headcount (quantidade) por cargo × 12 meses. Espelha o planejamento do orçamento."""
+def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist=None, membros_key=None):
+    """Grade de headcount (quantidade) por cargo × 12 meses. Espelha o planejamento do orçamento.
+       A grade começa com a estrutura do ano anterior + rascunho. A coluna 'Remover' zera os 12 meses
+       e tira o cargo da grade (regra: quantidade > 0 = está no quadro; zerado = fora). Não apaga histórico."""
     hist = hist or {}
     idx = {str(r["cargo_cod"]): r for r in plan_rows
            if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None}
@@ -3115,16 +3239,21 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
             f"Hist. {ano-1}": [int(round(float(hist.get(str(cod), {}).get("total", 0.0)))) for cod, _ in cargos]}
     for mi in range(1, 13):
         data[MABREV[mi]] = [int(round(float((idx.get(str(cod), {}) or {}).get(f"m{mi}") or 0))) for cod, _ in cargos]
+    if editavel:
+        data["Remover"] = [False for _ in cargos]
     df = pd.DataFrame(data)
     colcfg = {f"Hist. {ano-1}": st.column_config.NumberColumn(f"Hist. {ano-1} (HC)", format="%d", help="Headcount realizado do ano anterior (total do ano) — referência, não editável")}
     colcfg.update({MABREV[mi]: st.column_config.NumberColumn(f"{MABREV[mi]}", format="%d", step=1, min_value=0, help="Quantidade de funcionários planejada neste mês") for mi in range(1, 13)})
+    if editavel:
+        colcfg["Remover"] = st.column_config.CheckboxColumn("Remover", help="Marque para tirar o cargo do quadro: zera os 12 meses e some da grade. Não apaga o histórico.")
     disabled = ["Cargo", f"Hist. {ano-1}"] + ([] if editavel else [MABREV[mi] for mi in range(1, 13)])
     if editavel:
         st.markdown(
             "<div style='background:#EEF2F8;border-left:4px solid " + AZUL_CORP + ";padding:9px 13px;"
             "border-radius:6px;margin:2px 0 8px;font-size:14px;color:#1f2b45;'>"
             f"✍️ <b>Digite aqui:</b> em cada linha (cargo), preencha a <b>quantidade de funcionários</b> de Janeiro a Dezembro. "
-            f"A coluna <b>Hist. {ano-1}</b> é referência (headcount do ano anterior). Use <b>Copiar {ano-1}</b> para preencher e ajustar.</div>",
+            f"A coluna <b>Hist. {ano-1}</b> é referência (headcount do ano anterior). Para <b>tirar</b> um cargo do quadro, "
+            "marque <b>Remover</b> (zera e some ao salvar). Para <b>incluir</b> um cargo novo, use o seletor acima da grade.</div>",
             unsafe_allow_html=True)
     else:
         st.caption("🔒 Somente leitura (janela fechada ou já enviado/aprovado).")
@@ -3134,7 +3263,7 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
         return
     b = st.columns([1, 1.3, 1.5, 2])
     salvar = b[0].button("💾 Salvar rascunho", key=f"qlp_sv_{uni_cod}_{cr_cod}")
-    enviar = b[1].button("📤 Enviar para controladoria", key=f"qlp_en_{uni_cod}_{cr_cod}", type="primary")
+    enviar = b[1].button("📤 Finalizar e enviar este CR", key=f"qlp_en_{uni_cod}_{cr_cod}", type="primary")
     copiar = b[2].button(f"📋 Copiar {ano-1}", key=f"qlp_cp_{uni_cod}_{cr_cod}",
                          help=f"Preenche os 12 meses com o headcount realizado de {ano-1} (dos cargos que têm histórico).")
     if copiar:
@@ -3158,18 +3287,32 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
         if ok:
             limpar_cache(); st.success(f"{ano-1} copiado para {n} cargo(s). Ajuste e envie."); st.rerun()
     if salvar or enviar:
+        removidos = []
         for i, (cod, nome) in enumerate(cargos):
+            remover = bool(ed["Remover"].iloc[i]) if "Remover" in ed.columns else False
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                    "cargo_cod": str(cod), "cargo_nome": nome, "atualizado_por": prof.get("nome", "")}
             for mi in range(1, 13):
-                row[f"m{mi}"] = int(round(float(ed[MABREV[mi]].iloc[i] or 0)))
+                row[f"m{mi}"] = 0 if remover else int(round(float(ed[MABREV[mi]].iloc[i] or 0)))
             c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
+            if remover:
+                removidos.append(str(cod))
+        # tira os removidos da grade (session) — regra: zerado = fora do quadro
+        if membros_key and removidos:
+            atual = st.session_state.get(membros_key, [])
+            st.session_state[membros_key] = [x for x in atual if str(x) not in set(removidos)]
         novo = "ENVIADO" if enviar else "RASCUNHO"
         c.table("qlp_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": novo,
                                            "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
         limpar_cache()
-        st.success("Enviado à controladoria." if enviar else "Rascunho salvo.")
-        st.rerun()
+        if enviar:
+            msg = ("QLP do CR finalizado e enviado à controladoria. Para substituir algo agora, "
+                   "a controladoria precisa devolver o CR — aí você ajusta e reenvia.")
+        else:
+            msg = "Rascunho salvo."
+        if removidos:
+            msg += f" {len(removidos)} cargo(s) removido(s) do quadro (zerados)."
+        st.success(msg); st.rerun()
 
 def tela_qlp_gestor(c, prof, ano):
     st.markdown(f"<div class='modtag'>Planejamento de Pessoal — QLP {ano}</div>", unsafe_allow_html=True)
@@ -3196,17 +3339,20 @@ def tela_qlp_gestor(c, prof, ano):
     cr_opt = st.selectbox("1) Escolha o centro de resultado", crs, format_func=_fmt_cr, key="qlp_cr")
     uni_cod, cr_cod = cr_opt
     cr_nome = crmap[cr_opt]
-    # cargos: catálogo completo + cargos já existentes no CR (permite cargo novo)
+    # catálogo de cargos (para adicionar) + nomes conhecidos (catálogo + ano anterior + rascunho)
     cat = carregar_hc_cargo()
-    cargos_full = {}
+    cargos_cat = {}
     for x in (cat or []):
         if x.get("cargo_cod") is not None and x.get("ativo", True):
-            cargos_full[str(x["cargo_cod"])] = x.get("cargo_nome", "")
-    for r in ref:
-        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
-            cargos_full.setdefault(str(r["cargo_cod"]), r.get("cargo_nome", ""))
-    cargos_full = sorted(cargos_full.items(), key=lambda kv: kv[0])
+            cargos_cat[str(x["cargo_cod"])] = x.get("cargo_nome", "")
     plan_rows = carregar_qlp_plan(ano)
+    nomes = dict(cargos_cat)
+    for r in ref:
+        if r.get("cargo_cod") is not None:
+            nomes.setdefault(str(r["cargo_cod"]), r.get("cargo_nome", ""))
+    for r in plan_rows:
+        if r.get("cargo_cod") is not None:
+            nomes.setdefault(str(r["cargo_cod"]), r.get("cargo_nome", ""))
     stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s.get("status", "RASCUNHO") for s in carregar_qlp_status(ano)}
     status = stt.get((uni_cod, cr_cod), "RASCUNHO")
     cor = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}.get(status, CINZA_TXT)
@@ -3218,8 +3364,7 @@ def tela_qlp_gestor(c, prof, ano):
     if status == "DEVOLVIDO":
         st.warning("Devolvido pela controladoria para ajuste. Corrija e envie novamente.")
     editavel = aberta and status not in ("APROVADO", "ENVIADO")
-    q = st.text_input("Filtrar cargo (código ou nome) — opcional", key="qlp_filtro")
-    cargos = [(cod, nome) for cod, nome in cargos_full if (not q) or q.lower() in f"{cod} {nome}".lower()]
+
     # histórico do ano anterior (headcount realizado) por cargo, para este CR
     hist = {}
     for r in ref:
@@ -3231,10 +3376,44 @@ def tela_qlp_gestor(c, prof, ano):
     for cod in hist:
         # headcount por mês é uma quantidade pontual; o "total do ano" aqui é o pico do ano (máximo mensal)
         hist[cod]["total"] = max(hist[cod]["m"].values()) if hist[cod]["m"] else 0.0
+
+    # ----- estrutura inicial da grade: cargos do ano anterior + cargos já lançados (com qtd > 0) -----
+    base_cods = set(str(cod) for cod in hist)
+    for r in plan_rows:
+        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
+            if any(int(round(float(r.get(f"m{mi}") or 0))) > 0 for mi in range(1, 13)):
+                base_cods.add(str(r["cargo_cod"]))
+    mkey = f"qlp_membros_{ano}_{uni_cod}_{cr_cod}"
+    # (re)inicializa a lista de cargos da grade ao trocar de CR/ano (ou no primeiro acesso)
+    if st.session_state.get("qlp_cr_ctx") != (ano, uni_cod, cr_cod):
+        st.session_state["qlp_cr_ctx"] = (ano, uni_cod, cr_cod)
+        st.session_state[mkey] = sorted(base_cods, key=lambda x: (len(x), x))
+    membros = st.session_state.get(mkey)
+    if membros is None:
+        membros = sorted(base_cods, key=lambda x: (len(x), x)); st.session_state[mkey] = membros
+
+    # ----- adicionar cargo do catálogo à grade -----
+    if editavel:
+        faltantes = sorted([(cod, nomes.get(cod, cod)) for cod in cargos_cat if cod not in set(membros)],
+                           key=lambda kv: (len(kv[0]), kv[0]))
+        addc = st.columns([3.4, 1.1])
+        add_sel = addc[0].selectbox("➕ Adicionar cargo do catálogo à grade", [("", "— selecione um cargo —")] + faltantes,
+                                    format_func=lambda kv: kv[1] if kv[0] == "" else f"{kv[0]} · {kv[1]}",
+                                    key=f"qlp_add_sel_{uni_cod}_{cr_cod}")
+        if addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", disabled=(add_sel[0] == "")):
+            if add_sel[0] and add_sel[0] not in membros:
+                st.session_state[mkey] = list(membros) + [add_sel[0]]
+                st.rerun()
+
+    q = st.text_input("Filtrar cargo (código ou nome) — opcional", key="qlp_filtro")
+    cargos = [(cod, nomes.get(cod, cod)) for cod in membros if (not q) or q.lower() in f"{cod} {nomes.get(cod, '')}".lower()]
     st.markdown(f"<div style='font-weight:600;color:{AZUL_PROFUNDO};margin-top:6px'>2) Preencha o headcount por mês e 3) envie</div>"
-                f"<div style='font-size:12px;color:{CINZA_TXT}'>Catálogo de cargos — mostrando {len(cargos)} de {len(cargos_full)}. "
-                f"<b>Hist. {ano-1}</b> = pico de headcount do ano anterior (referência).</div>", unsafe_allow_html=True)
-    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist)
+                f"<div style='font-size:12px;color:{CINZA_TXT}'>Quadro atual — {len(cargos)} cargo(s) na grade "
+                f"(catálogo disponível: {len(cargos_cat)}). A grade começa com a estrutura de {ano-1}; adicione cargos pelo seletor "
+                f"e remova marcando <b>Remover</b>. <b>Hist. {ano-1}</b> = pico de headcount do ano anterior (referência).</div>", unsafe_allow_html=True)
+    if not cargos:
+        st.caption("Nenhum cargo na grade ainda. Use o seletor acima para adicionar cargos do catálogo.")
+    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist, membros_key=mkey)
 
 def _consolidar_qlp(c, ano, uni, cr, cr_nome, plan_cr, ref):
     """Grava o QLP aprovado em hc_quadro[qtd_orcada] (12 linhas por cargo). Preserva qtd_realizada."""
@@ -3301,6 +3480,9 @@ def tela_qlp_ctrl(c, prof, ano):
         st.success(f"Todos os {len(universo)} CRs enviaram o QLP {ano}.")
     else:
         st.caption("Nenhum vínculo gestor↔CR cadastrado para comparar pendências.")
+
+    with st.expander("📋 Finalização por gestor (QLP)", expanded=False):
+        _painel_finalizacao_gestor(status_rows, ano, "QLP")
 
     # ---- extrato do QLP (planilha para enviar ao RH avaliar/consolidar) ----
     plan_all = carregar_qlp_plan(ano)
