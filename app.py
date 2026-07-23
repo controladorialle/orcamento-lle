@@ -3249,7 +3249,7 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
             unsafe_allow_html=True)
     else:
         st.caption("🔒 Somente leitura (janela fechada ou já enviado/aprovado).")
-    ed = st.data_editor(df, key=f"plan_{ano}_{uni_cod}_{cr_cod}", hide_index=True, use_container_width=True,
+    ed = st.data_editor(df, key=f"plan_{ano}_{uni_cod}_{cr_cod}_{len(contas)}", hide_index=True, use_container_width=True,
                         num_rows="fixed", disabled=disabled, column_config=colcfg)
     if not editavel:
         return
@@ -3786,7 +3786,7 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
             unsafe_allow_html=True)
     else:
         st.caption("🔒 Somente leitura (janela fechada ou já enviado/aprovado).")
-    ed = st.data_editor(df, key=f"qlp_{ano}_{uni_cod}_{cr_cod}", hide_index=True, use_container_width=True,
+    ed = st.data_editor(df, key=f"qlp_{ano}_{uni_cod}_{cr_cod}_{len(cargos)}", hide_index=True, use_container_width=True,
                         num_rows="fixed", disabled=disabled, column_config=colcfg)
     if not editavel:
         return
@@ -3931,16 +3931,23 @@ def tela_qlp_gestor(c, prof, ano):
 
         def _qlp_add():
             s = st.session_state.get(selkey, "")
-            if s and s not in set(membros):
-                row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
-                       "cargo_cod": str(s), "cargo_nome": nomes.get(s, s), "atualizado_por": prof.get("nome", "")}
-                for mi in range(1, 13):
-                    row[f"m{mi}"] = 0
-                try:
-                    c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
-                    limpar_cache()
-                except Exception:
-                    pass
+            if not s:
+                st.session_state["qlp_add_msg"] = ("warn", "Nenhum cargo selecionado no seletor.")
+                return
+            if s in set(membros):
+                st.session_state["qlp_add_msg"] = ("warn", f"O cargo {s} já está na grade.")
+                st.session_state[selkey] = ""
+                return
+            row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
+                   "cargo_cod": str(s), "cargo_nome": nomes.get(s, s), "atualizado_por": prof.get("nome", "")}
+            for mi in range(1, 13):
+                row[f"m{mi}"] = 0
+            try:
+                c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
+                limpar_cache()
+                st.session_state["qlp_add_msg"] = ("ok", f"Cargo {s} · {nomes.get(s, s)} adicionado à grade.")
+            except Exception as e:
+                st.session_state["qlp_add_msg"] = ("err", f"Falha ao gravar no qlp_plan: {e}")
             st.session_state[selkey] = ""
 
         addc = st.columns([3.4, 1.1])
@@ -3949,6 +3956,9 @@ def tela_qlp_gestor(c, prof, ano):
                           key=selkey,
                           help="Lista com todos os cargos existentes no sistema, em ordem alfabética. Jr/Pleno/Sr têm códigos próprios e aparecem separados. Escolha o que se aplica ao seu CR.")
         addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", on_click=_qlp_add)
+        _m = st.session_state.pop("qlp_add_msg", None)
+        if _m:
+            {"ok": st.success, "warn": st.warning, "err": st.error}.get(_m[0], st.info)(_m[1])
         if not faltantes:
             st.caption("Todos os cargos conhecidos já estão na grade. Cargos novos entram na base pela importação de pessoal.")
 
