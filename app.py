@@ -33,10 +33,11 @@ DEDUCOES = ["Devolução de Vendas", "COFINS", "ICMS", "ICMS - Bonificação", "
 DRE_GRUPOS = [("Receitas Financeiras", "rev"), ("Outras Receitas Não Operacionais", "rev"),
               ("Despesas Variáveis", "cost"),
               ("Despesas Comerciais", "cost"), ("Despesas Administrativas", "cost"),
+              ("Depreciação e Amortização", "cost"),
               ("Despesas Financeiras", "cost"), ("Outras Despesas Operacionais", "cost"),
               ("Impostos (IRPJ/CSLL)", "cost")]
 DRE_VAR_COST = ["Despesas Variáveis"]
-DRE_OP_COST = ["Despesas Comerciais", "Despesas Administrativas", "Outras Despesas Operacionais"]
+DRE_OP_COST = ["Despesas Comerciais", "Despesas Administrativas", "Depreciação e Amortização", "Outras Despesas Operacionais"]
 DRE_PRE_ADD = ["Receitas Financeiras", "Outras Receitas Não Operacionais"]
 DRE_PRE_SUB = ["Despesas Financeiras"]
 DRE_IMPOSTO = "Impostos (IRPJ/CSLL)"
