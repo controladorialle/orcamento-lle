@@ -3161,7 +3161,7 @@ def tela_acompanhamento(c, prof, banda, df_orc, cg, is_ctrl, ano, mes, mostrar_j
 
 # ---------------------------------------------------------------- planejamento (orçamento pelo gestor)
 @fragment
-def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist=None):
+def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist=None, membros_key=None):
     hist = hist or {}
     if not contas:
         st.info("Nenhuma conta disponível para lançar. Importe/atualize o plano de contas.")
@@ -3171,18 +3171,26 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
     hm_on = st.checkbox(f"Histórico mês a mês ({ano-1})", value=False, key=f"plan_hm_{uni_cod}_{cr_cod}",
                         help="Mostra, ao lado de cada mês, o realizado do mesmo mês no ano anterior (referência, não editável).")
     data = {"Conta": [f"{cod} · {desc}" for cod, desc in contas],
-            f"Histórico {ano-1}": [round(float(hist.get(cod, {}).get("total", 0.0)), 2) for cod, _ in contas]}
+            f"Histórico {ano-1}": [int(round(float(hist.get(cod, {}).get("total", 0.0)))) for cod, _ in contas]}
     ant_cols = []
     for mi in range(1, 13):
-        data[MABREV[mi]] = [float((idx.get(cod, {}) or {}).get(f"m{mi}") or 0) for cod, _ in contas]
+        data[MABREV[mi]] = [int(round(float((idx.get(cod, {}) or {}).get(f"m{mi}") or 0))) for cod, _ in contas]
         if hm_on:
             an = f"{MABREV[mi]} ant."
             ant_cols.append(an)
-            data[an] = [round(float((hist.get(cod, {}).get("m", {}) or {}).get(mi, 0.0)), 2) for cod, _ in contas]
+            data[an] = [int(round(float((hist.get(cod, {}).get("m", {}) or {}).get(mi, 0.0)))) for cod, _ in contas]
+    if editavel:
+        data["Remover"] = [False for _ in contas]
     df = pd.DataFrame(data)
+    for cn in [f"Histórico {ano-1}"] + [MABREV[mi] for mi in range(1, 13)] + ant_cols:
+        df[cn] = pd.to_numeric(df[cn], errors="coerce").fillna(0).astype(int)
+    if editavel:
+        df["Remover"] = df["Remover"].astype(bool)
     colcfg = {f"Histórico {ano-1}": st.column_config.NumberColumn(f"Histórico {ano-1} (R$)", format="%.0f", help="Realizado do ano anterior (total do ano) — referência, não editável")}
     colcfg.update({MABREV[mi]: st.column_config.NumberColumn(f"{MABREV[mi]} (R$)", format="%.0f", step=1, help="Digite o valor planejado deste mês") for mi in range(1, 13)})
     colcfg.update({an: st.column_config.NumberColumn(f"{an} (R$)", format="%.0f", help=f"Realizado deste mês em {ano-1} — referência, não editável") for an in ant_cols})
+    if editavel:
+        colcfg["Remover"] = st.column_config.CheckboxColumn("Remover", help="Marque para tirar a conta da grade: zera os 12 meses e some ao salvar.")
     disabled = ["Conta", f"Histórico {ano-1}"] + ant_cols + ([] if editavel else [MABREV[mi] for mi in range(1, 13)])
     if editavel:
         st.markdown(
@@ -3224,17 +3232,26 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
         if ok:
             limpar_cache(); st.success(f"{ano-1} copiado para {n} conta(s). Ajuste os meses e envie."); st.rerun()
     if salvar or enviar:
-        gravou = 0
+        gravou = 0; removidos = []
         for i, (cod, desc) in enumerate(contas):
-            vals = {f"m{mi}": round(float(ed[MABREV[mi]].iloc[i] or 0)) for mi in range(1, 13)}
+            remover = bool(ed["Remover"].iloc[i]) if "Remover" in ed.columns else False
+            vals = {f"m{mi}": (0 if remover else round(float(ed[MABREV[mi]].iloc[i] or 0))) for mi in range(1, 13)}
             tem_valor = any(v != 0 for v in vals.values())
             ja_existe = int(cod) in idx  # conta já lançada antes neste CR
             if not tem_valor and not ja_existe:
+                if remover:
+                    removidos.append(int(cod))
                 continue  # não cria linha zerada para conta nunca usada (mantém o orc_plan enxuto)
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                    "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", ""), **vals}
             c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
             gravou += 1
+            if remover:
+                removidos.append(int(cod))
+        # tira as removidas da grade (session) — zerado = fora
+        if membros_key and removidos:
+            atual = st.session_state.get(membros_key, [])
+            st.session_state[membros_key] = [x for x in atual if int(x) not in set(removidos)]
         pend = []
         if enviar:
             try:
@@ -3373,8 +3390,6 @@ def tela_planejamento_gestor(c, prof, ano):
     if status == "DEVOLVIDO":
         st.warning("Devolvido pela controladoria para ajuste. Corrija e envie novamente.")
     editavel = aberta and status not in ("APROVADO", "ENVIADO")
-    q = st.text_input("Filtrar conta (código ou nome) — opcional", key="plan_filtro")
-    contas = [(cod, desc) for cod, desc in contas_full if (not q) or q.lower() in f"{cod} {desc}".lower()]
     # histórico do ano anterior (realizado) por conta, para este CR
     hist = {}
     for r in ref:
@@ -3392,13 +3407,42 @@ def tela_planejamento_gestor(c, prof, ano):
             k = (int(r.get("uni_cod", 0) or 0), int(r.get("cr_cod", 0) or 0), int(r["conta_cod"]))
             hist_tot[k] = hist_tot.get(k, 0.0) + float(r.get("valor_realizado") or 0)
 
+    # ----- grade em uso + adicionar conta (mesmo padrão do QLP) -----
+    saved_cods = {int(r["conta_cod"]) for r in plan_rows
+                  if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None}
+    seed = sorted(saved_cods | set(hist.keys()))
+    mkey_c = f"plan_membros_{ano}_{uni_cod}_{cr_cod}"
+    if st.session_state.get("plan_cr_ctx") != (ano, uni_cod, cr_cod):
+        st.session_state["plan_cr_ctx"] = (ano, uni_cod, cr_cod)
+        st.session_state[mkey_c] = seed
+    membros_c = st.session_state.get(mkey_c)
+    if membros_c is None:
+        membros_c = seed; st.session_state[mkey_c] = membros_c
+    if editavel:
+        faltantes = [cod for cod, _ in contas_full if cod not in set(membros_c)]
+        selkey = f"plan_add_sel_{uni_cod}_{cr_cod}"
+        addc = st.columns([3.4, 1.1])
+        selc = addc[0].selectbox("➕ Adicionar conta à grade (plano de contas completo)", [""] + faltantes,
+                                 format_func=lambda cc: "— selecione uma conta —" if cc == "" else f"{cc} · {contas_dict.get(cc, '')}",
+                                 key=selkey,
+                                 help="Todas as contas da base. Escolha e clique em Adicionar para incluir na grade.")
+        if addc[1].button("Adicionar conta", key=f"plan_add_btn_{uni_cod}_{cr_cod}", disabled=(selc == "")):
+            if selc != "" and int(selc) not in set(membros_c):
+                st.session_state[mkey_c] = list(membros_c) + [int(selc)]
+                st.session_state.pop(selkey, None); st.rerun()
+        if not faltantes:
+            st.caption("Todas as contas da base já estão na grade.")
+    q = st.text_input("Filtrar conta (código ou nome) — opcional", key="plan_filtro")
+    contas = [(cod, contas_dict.get(cod, "")) for cod in membros_c if (not q) or q.lower() in f"{cod} {contas_dict.get(cod,'')}".lower()]
+
     etapa = st.radio("Etapa", ["1) Valores", "2) Justificativas por conta"], horizontal=True, key="plan_etapa")
     if etapa.startswith("1"):
         st.markdown(f"<div style='font-weight:600;color:{AZUL_PROFUNDO};margin-top:6px'>Preencha os valores por mês</div>"
-                    f"<div style='font-size:12px;color:{CINZA_TXT}'>Plano de contas completo (união de todas as contas já vistas) — "
-                    f"mostrando {len(contas)} de {len(contas_full)} contas. <b>Histórico {ano-1}</b> = realizado do ano anterior "
-                    f"(referência). Contas em zero não geram lançamento. Depois vá em “2) Justificativas por conta”.</div>", unsafe_allow_html=True)
-        _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist)
+                    f"<div style='font-size:12px;color:{CINZA_TXT}'>A grade começa com as contas em uso e o histórico de {ano-1}. "
+                    f"Use <b>➕ Adicionar conta</b> (acima) para trazer qualquer conta da base ({len(contas_full)} no total) e "
+                    f"<b>Remover</b> para tirar da grade. <b>Histórico {ano-1}</b> = realizado do ano anterior. "
+                    f"Contas em zero não geram lançamento. Depois vá em “2) Justificativas por conta”.</div>", unsafe_allow_html=True)
+        _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist, membros_key=mkey_c)
     else:
         secao_justif_orcamento(c, prof, ano, uni_cod, cr_cod, plan_rows, hist, editavel)
 
@@ -3759,21 +3803,31 @@ def tela_qlp_gestor(c, prof, ano):
         st.info(f"O QLP está habilitado apenas para: {', '.join(map(str, anos_hab))}. Selecione um desses anos no seletor **Ano**, no topo.")
         return
     aberta = get_qlp_janela(c, ano)
-    ref = carregar_hc_quadro(ano - 1) or carregar_hc_quadro(ano) or []
     EMP = {1: "PISA", 2: "KING"}
-    uni_nome = {int(r["uni_cod"]): (r.get("unidade") or "") for r in ref if r.get("uni_cod") is not None}
+    ref = carregar_hc_quadro(ano - 1) or []
+    cur_hc = carregar_hc_quadro(ano) or []
+    uni_nome = {int(r["uni_cod"]): (r.get("unidade") or "") for r in (ref + cur_hc) if r.get("uni_cod") is not None}
+    # CRs do gestor a partir do CADASTRO (cr_gestor): Empresa > CR (com ou sem movimento)
     crmap = {}
-    for r in ref:
-        if r.get("cr_cod") is not None:
-            crmap[(int(r["uni_cod"]), int(r["cr_cod"]))] = r.get("cr_nome", "")
+    for r in (carregar_cr_gestor() or []):
+        if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
+            crmap[(int(r["uni_cod"]), int(r["cr_cod"]))] = r.get("cr_nome", "") or ""
+    if not crmap:
+        for r in ref:
+            if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
+                crmap.setdefault((int(r["uni_cod"]), int(r["cr_cod"])), r.get("cr_nome", "") or "")
     crs = sorted(crmap.keys())
     if not crs:
-        st.info(f"Não há estrutura de cargos do ano {ano-1} nos seus centros de resultado para preencher.")
+        st.info("Você não tem centros de resultado cadastrados. Fale com a controladoria (cadastro de CRs por gestor).")
         return
-    def _fmt_cr(k):
-        emp = uni_nome.get(k[0]) or EMP.get(k[0], str(k[0]))
-        return f"{emp} · {k[1]} · {crmap[k]}"
-    cr_opt = st.selectbox("1) Escolha o centro de resultado", crs, format_func=_fmt_cr, key="qlp_cr")
+    unis_disp = sorted({k[0] for k in crs})
+    cse = st.columns([1.2, 3])
+    uni_cod = cse[0].selectbox("1) Empresa", unis_disp, format_func=lambda u: (uni_nome.get(u) or EMP.get(u, str(u))), key="qlp_uni")
+    crs_emp = [k for k in crs if k[0] == uni_cod]
+    if not crs_emp:
+        st.info("Nenhum centro de resultado atribuído a você nesta empresa.")
+        return
+    cr_opt = cse[1].selectbox("2) Centro de resultado", crs_emp, format_func=lambda k: f"{k[1]} · {crmap[k]}", key="qlp_cr")
     uni_cod, cr_cod = cr_opt
     cr_nome = crmap[cr_opt]
     # catálogo de cargos (para adicionar) + nomes conhecidos (catálogo + ano anterior + rascunho)
@@ -3845,16 +3899,18 @@ def tela_qlp_gestor(c, prof, ano):
 
     # ----- adicionar cargo do catálogo/histórico à grade -----
     if editavel:
-        faltantes = sorted([(cod, nomes.get(cod, cod)) for cod in cargos_cat if cod not in set(membros)],
-                           key=lambda kv: ((kv[1] or "").lower(), kv[0]))
+        faltantes = sorted([cod for cod in cargos_cat if cod not in set(membros)],
+                           key=lambda cc: ((nomes.get(cc, cc) or "").lower(), cc))
+        selkey = f"qlp_add_sel_{uni_cod}_{cr_cod}"
         addc = st.columns([3.4, 1.1])
-        add_sel = addc[0].selectbox("➕ Adicionar cargo à grade (histórico de cargos)", [("", "— selecione um cargo —")] + faltantes,
-                                    format_func=lambda kv: kv[1] if kv[0] == "" else f"{kv[0]} · {kv[1]}",
-                                    key=f"qlp_add_sel_{uni_cod}_{cr_cod}",
-                                    help="Lista com todos os cargos já usados na empresa. Jr/Pleno/Sr têm códigos próprios e aparecem como cargos separados.")
-        if addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", disabled=(add_sel[0] == "")):
-            if add_sel[0] and add_sel[0] not in membros:
-                st.session_state[mkey] = list(membros) + [add_sel[0]]
+        sel = addc[0].selectbox("➕ Adicionar cargo à grade (histórico de cargos)", [""] + faltantes,
+                                format_func=lambda cc: "— selecione um cargo —" if cc == "" else f"{cc} · {nomes.get(cc, cc)}",
+                                key=selkey,
+                                help="Todos os cargos já usados na empresa. Jr/Pleno/Sr têm códigos próprios e aparecem como cargos separados.")
+        if addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", disabled=(sel == "")):
+            if sel and sel not in membros:
+                st.session_state[mkey] = list(membros) + [sel]
+                st.session_state.pop(selkey, None)  # limpa a seleção (evita valor inválido após rerun)
                 st.rerun()
         if not faltantes:
             st.caption("Todos os cargos conhecidos já estão na grade. Cargos novos entram na base pela importação de pessoal.")
