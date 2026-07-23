@@ -181,6 +181,13 @@ def inject_css():
 def norm(s): return unicodedata.normalize("NFD", str(s)).encode("ascii", "ignore").decode().lower().strip()
 def brl(n): return "R$ " + f"{round(float(n or 0)):,.0f}".replace(",", ".")
 def pct_txt(n): return f"{n:+.1f}".replace(".", ",") + "%"
+def _upsert_soft(c, table, row, on_conflict):
+    """Upsert que não quebra se a coluna 'ativo' ainda não existir no banco (tenta sem ela)."""
+    try:
+        c.table(table).upsert(row, on_conflict=on_conflict).execute()
+    except Exception:
+        c.table(table).upsert({k: v for k, v in row.items() if k != "ativo"}, on_conflict=on_conflict).execute()
+
 def chunks(seq, n=500):
     for i in range(0, len(seq), n): yield seq[i:i + n]
 
@@ -3283,10 +3290,11 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
         for i, (cod, desc) in enumerate(contas):
             remover = bool(ed["Remover"].iloc[i]) if "Remover" in ed.columns else False
             if remover:
-                try:
-                    c.table("orc_plan").delete().eq("ano", ano).eq("uni_cod", uni_cod).eq("cr_cod", cr_cod).eq("conta_cod", int(cod)).execute()
-                except Exception:
-                    pass
+                row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
+                       "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", ""), "ativo": False}
+                for mi in range(1, 13):
+                    row[f"m{mi}"] = 0
+                _upsert_soft(c, "orc_plan", row, "ano,uni_cod,cr_cod,conta_cod")
                 removidos.append(int(cod))
                 continue
             vals = {f"m{mi}": round(float(ed[MABREV[mi]].iloc[i] or 0)) for mi in range(1, 13)}
@@ -3295,8 +3303,8 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
             if not tem_valor and not ja_existe:
                 continue  # não cria linha zerada para conta nunca usada (mantém o orc_plan enxuto)
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
-                   "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", ""), **vals}
-            c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
+                   "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", ""), "ativo": True, **vals}
+            _upsert_soft(c, "orc_plan", row, "ano,uni_cod,cr_cod,conta_cod")
             gravou += 1
         pend = []
         if enviar:
@@ -3451,9 +3459,11 @@ def tela_planejamento_gestor(c, prof, ano):
             hist_tot[k] = hist_tot.get(k, 0.0) + float(r.get("valor_realizado") or 0)
 
     # ----- grade em uso + adicionar conta (baseada no banco, igual ao QLP) -----
-    membros_c = sorted({int(r["conta_cod"]) for r in plan_rows
-                        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None}
-                       | set(hist.keys()))
+    _plan_cr = [r for r in plan_rows if int(r.get("uni_cod", 0) or 0) == uni_cod
+                and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None]
+    _removidas_c = {int(r["conta_cod"]) for r in _plan_cr if r.get("ativo") is False}
+    _ativas_c = {int(r["conta_cod"]) for r in _plan_cr if r.get("ativo") is not False}
+    membros_c = sorted((_ativas_c | set(hist.keys())) - _removidas_c)
     if editavel:
         faltantes = sorted([cod for cod, _ in contas_full if cod not in set(membros_c)])
         selkey = f"plan_add_sel_{uni_cod}_{cr_cod}"
@@ -3462,11 +3472,11 @@ def tela_planejamento_gestor(c, prof, ano):
             s = st.session_state.get(selkey, "")
             if s != "" and int(s) not in set(membros_c):
                 row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
-                       "conta_cod": int(s), "conta_desc": contas_dict.get(int(s), ""), "atualizado_por": prof.get("nome", "")}
+                       "conta_cod": int(s), "conta_desc": contas_dict.get(int(s), ""), "atualizado_por": prof.get("nome", ""), "ativo": True}
                 for mi in range(1, 13):
                     row[f"m{mi}"] = 0
                 try:
-                    c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
+                    _upsert_soft(c, "orc_plan", row, "ano,uni_cod,cr_cod,conta_cod")
                     limpar_cache()
                 except Exception:
                     pass
@@ -3819,22 +3829,18 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
         removidos = []
         for i, (cod, nome) in enumerate(cargos):
             remover = bool(ed["Remover"].iloc[i]) if "Remover" in ed.columns else False
-            if remover:
-                try:
-                    c.table("qlp_plan").delete().eq("ano", ano).eq("uni_cod", uni_cod).eq("cr_cod", cr_cod).eq("cargo_cod", str(cod)).execute()
-                except Exception:
-                    pass
-                removidos.append(str(cod))
-                continue
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                    "cargo_cod": str(cod), "cargo_nome": nome, "atualizado_por": prof.get("nome", "")}
-            for mi in range(1, 13):
-                row[f"m{mi}"] = int(round(float(ed[MABREV[mi]].iloc[i] or 0)))
-            c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
-        # tira os removidos da grade (session) para não reaparecerem
-        if membros_key and removidos:
-            atual = st.session_state.get(membros_key, [])
-            st.session_state[membros_key] = [x for x in atual if str(x) not in set(removidos)]
+            if remover:
+                for mi in range(1, 13):
+                    row[f"m{mi}"] = 0
+                row["ativo"] = False
+                removidos.append(str(cod))
+            else:
+                for mi in range(1, 13):
+                    row[f"m{mi}"] = int(round(float(ed[MABREV[mi]].iloc[i] or 0)))
+                row["ativo"] = True
+            _upsert_soft(c, "qlp_plan", row, "ano,uni_cod,cr_cod,cargo_cod")
         novo = "ENVIADO" if enviar else "RASCUNHO"
         c.table("qlp_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": novo,
                                            "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
@@ -3922,7 +3928,8 @@ def tela_qlp_gestor(c, prof, ano):
     # ----- membership da grade (SEM estado de sessão) -----
     # Se o CR já tem plano lançado, a grade reflete o PLANO; senão, começa pela estrutura do histórico.
     plan_cods = [str(r["cargo_cod"]) for r in plan_rows
-                 if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None]
+                 if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod
+                 and r.get("cargo_cod") is not None and (r.get("ativo") is not False)]
     if plan_cods:
         membros = sorted(set(plan_cods), key=lambda x: ((nomes.get(x, x) or "").lower(), x))
     else:
@@ -3944,11 +3951,11 @@ def tela_qlp_gestor(c, prof, ano):
                 st.session_state[selkey] = ""
                 return
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
-                   "cargo_cod": str(s), "cargo_nome": nomes.get(s, s), "atualizado_por": prof.get("nome", "")}
+                   "cargo_cod": str(s), "cargo_nome": nomes.get(s, s), "atualizado_por": prof.get("nome", ""), "ativo": True}
             for mi in range(1, 13):
                 row[f"m{mi}"] = 0
             try:
-                c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
+                _upsert_soft(c, "qlp_plan", row, "ano,uni_cod,cr_cod,cargo_cod")
                 # garante status do CR (para aparecer no controle) sem sobrescrever se já existir
                 try:
                     c.table("qlp_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod,
@@ -4030,6 +4037,50 @@ def tela_qlp_ctrl(c, prof, ano):
                 st.rerun()
             except Exception as e:
                 st.error(f"Não foi possível sincronizar os cargos: {e}")
+    with st.expander("🗂️ Catálogo de cargos da empresa (alimenta o seletor de TODOS os gestores)"):
+        cats = carregar_hc_cargo() or []
+        st.caption(f"{len(cats)} cargo(s) no catálogo. Os gestores só conseguem adicionar cargos que estejam AQUI "
+                   "(por segurança, eles não leem os cargos de CRs que não são deles). Mantenha aqui a lista completa da empresa.")
+        st.markdown("**Adicionar um cargo**")
+        ca = st.columns([1.2, 3, 1.1])
+        ncod = ca[0].text_input("Código", key="cadcargo_cod")
+        nnome = ca[1].text_input("Nome do cargo", key="cadcargo_nome")
+        if ca[2].button("Adicionar", key="cadcargo_add", use_container_width=True):
+            if ncod.strip() and nnome.strip():
+                try:
+                    c.table("hc_cargo").upsert({"cargo_cod": str(ncod).strip(), "cargo_nome": nnome.strip(), "ativo": True},
+                                               on_conflict="cargo_cod").execute()
+                    limpar_cache(); st.success(f"Cargo {ncod} · {nnome} salvo no catálogo."); st.rerun()
+                except Exception as e:
+                    st.error(f"Falha ao salvar: {e}")
+            else:
+                st.warning("Informe o código e o nome do cargo.")
+        st.markdown("**Adicionar vários de uma vez** — cole um por linha no formato `código;nome`:")
+        bulk = st.text_area("Colar lista de cargos", key="cadcargo_bulk", height=140,
+                            placeholder="1001;GERENTE COMERCIAL\n1002;VENDEDOR\n1003;ASSISTENTE ADMINISTRATIVO")
+        if st.button("Importar lista colada", key="cadcargo_bulk_btn"):
+            registros = {}
+            for linha in (bulk or "").splitlines():
+                if not linha.strip():
+                    continue
+                partes = re.split(r"[;\t]", linha.strip(), maxsplit=1)
+                if len(partes) == 2 and partes[0].strip():
+                    registros[str(partes[0]).strip()] = partes[1].strip()
+            if not registros:
+                st.warning("Nada para importar. Use o formato `código;nome`, um por linha.")
+            else:
+                try:
+                    payload = [{"cargo_cod": k, "cargo_nome": v, "ativo": True} for k, v in registros.items()]
+                    for ch in chunks(payload, 500):
+                        c.table("hc_cargo").upsert(ch, on_conflict="cargo_cod").execute()
+                    limpar_cache(); st.success(f"{len(registros)} cargo(s) importado(s)/atualizado(s) no catálogo."); st.rerun()
+                except Exception as e:
+                    st.error(f"Falha ao importar: {e}")
+        if cats:
+            st.markdown("**Catálogo atual**")
+            st.dataframe(pd.DataFrame([{"Código": x.get("cargo_cod"), "Cargo": x.get("cargo_nome"),
+                                        "Ativo": x.get("ativo", True)} for x in cats]),
+                         hide_index=True, use_container_width=True)
     st.divider()
 
     status_rows = carregar_qlp_status(ano)
