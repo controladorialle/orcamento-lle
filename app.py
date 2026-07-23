@@ -3831,6 +3831,10 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
             for mi in range(1, 13):
                 row[f"m{mi}"] = int(round(float(ed[MABREV[mi]].iloc[i] or 0)))
             c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
+        # tira os removidos da grade (session) para não reaparecerem
+        if membros_key and removidos:
+            atual = st.session_state.get(membros_key, [])
+            st.session_state[membros_key] = [x for x in atual if str(x) not in set(removidos)]
         novo = "ENVIADO" if enviar else "RASCUNHO"
         c.table("qlp_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": novo,
                                            "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
@@ -3915,13 +3919,23 @@ def tela_qlp_gestor(c, prof, ano):
         # headcount por mês é uma quantidade pontual; o "total do ano" aqui é o pico do ano (máximo mensal)
         hist[cod]["total"] = max(hist[cod]["m"].values()) if hist[cod]["m"] else 0.0
 
-    # ----- membership da grade = cargos com histórico (ano-1) + TODOS os já lançados no plano deste CR -----
-    # (baseada no banco, não em session_state — evita dessincronização ao adicionar/remover)
-    base_cods = set(str(cod) for cod in hist)
-    for r in plan_rows:
-        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
-            base_cods.add(str(r["cargo_cod"]))
-    membros = sorted(base_cods, key=lambda x: ((nomes.get(x, x) or "").lower(), x))
+    # ----- membership da grade -----
+    # Se o CR JÁ tem plano lançado, a grade reflete o PLANO (respeita add/remove salvos).
+    # Se ainda não tem plano, a grade começa com a estrutura do histórico (ano-1).
+    plan_cods = [str(r["cargo_cod"]) for r in plan_rows
+                 if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None]
+    if plan_cods:
+        seed = sorted(set(plan_cods), key=lambda x: ((nomes.get(x, x) or "").lower(), x))
+    else:
+        seed = sorted(set(str(cod) for cod in hist), key=lambda x: ((nomes.get(x, x) or "").lower(), x))
+    mkey = f"qlp_membros_{ano}_{uni_cod}_{cr_cod}"
+    if st.session_state.get("qlp_cr_ctx") != (ano, uni_cod, cr_cod):
+        st.session_state["qlp_cr_ctx"] = (ano, uni_cod, cr_cod)
+        st.session_state[mkey] = seed
+    membros = st.session_state.get(mkey)
+    if membros is None:
+        membros = seed
+        st.session_state[mkey] = membros
 
     # ----- adicionar cargo do catálogo/histórico à grade -----
     if editavel:
@@ -3934,20 +3948,12 @@ def tela_qlp_gestor(c, prof, ano):
             if not s:
                 st.session_state["qlp_add_msg"] = ("warn", "Nenhum cargo selecionado no seletor.")
                 return
-            if s in set(membros):
+            if s in st.session_state.get(mkey, []):
                 st.session_state["qlp_add_msg"] = ("warn", f"O cargo {s} já está na grade.")
                 st.session_state[selkey] = ""
                 return
-            row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
-                   "cargo_cod": str(s), "cargo_nome": nomes.get(s, s), "atualizado_por": prof.get("nome", "")}
-            for mi in range(1, 13):
-                row[f"m{mi}"] = 0
-            try:
-                c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
-                limpar_cache()
-                st.session_state["qlp_add_msg"] = ("ok", f"Cargo {s} · {nomes.get(s, s)} adicionado à grade.")
-            except Exception as e:
-                st.session_state["qlp_add_msg"] = ("err", f"Falha ao gravar no qlp_plan: {e}")
+            st.session_state[mkey] = list(st.session_state.get(mkey, [])) + [s]
+            st.session_state["qlp_add_msg"] = ("ok", f"Cargo {s} · {nomes.get(s, s)} adicionado à grade. Preencha o headcount e salve.")
             st.session_state[selkey] = ""
 
         addc = st.columns([3.4, 1.1])
@@ -3970,7 +3976,7 @@ def tela_qlp_gestor(c, prof, ano):
                 f"e remova marcando <b>Remover</b>. <b>Hist. {ano-1}</b> = pico de headcount do ano anterior (referência).</div>", unsafe_allow_html=True)
     if not cargos:
         st.caption("Nenhum cargo na grade ainda. Use o seletor acima para adicionar cargos do catálogo.")
-    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist)
+    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist, membros_key=mkey)
 
 def _consolidar_qlp(c, ano, uni, cr, cr_nome, plan_cr, ref):
     """Grava o QLP aprovado em hc_quadro[qtd_orcada] (12 linhas por cargo). Preserva qtd_realizada."""
