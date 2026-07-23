@@ -3463,17 +3463,21 @@ def tela_planejamento_gestor(c, prof, ano):
     if membros_c is None:
         membros_c = seed; st.session_state[mkey_c] = membros_c
     if editavel:
-        faltantes = [cod for cod, _ in contas_full if cod not in set(membros_c)]
+        faltantes = sorted([cod for cod, _ in contas_full if cod not in set(membros_c)])
         selkey = f"plan_add_sel_{uni_cod}_{cr_cod}"
+
+        def _plan_add(_mk=mkey_c, _sk=selkey):
+            s = st.session_state.get(_sk, "")
+            if s != "" and int(s) not in st.session_state.get(_mk, []):
+                st.session_state[_mk] = list(st.session_state.get(_mk, [])) + [int(s)]
+            st.session_state[_sk] = ""  # limpa a seleção
+
         addc = st.columns([3.4, 1.1])
-        selc = addc[0].selectbox("➕ Adicionar conta à grade (plano de contas completo)", [""] + faltantes,
-                                 format_func=lambda cc: "— selecione uma conta —" if cc == "" else f"{cc} · {contas_dict.get(cc, '')}",
-                                 key=selkey,
-                                 help="Todas as contas da base. Escolha e clique em Adicionar para incluir na grade.")
-        if addc[1].button("Adicionar conta", key=f"plan_add_btn_{uni_cod}_{cr_cod}", disabled=(selc == "")):
-            if selc != "" and int(selc) not in set(membros_c):
-                st.session_state[mkey_c] = list(membros_c) + [int(selc)]
-                st.session_state.pop(selkey, None); st.rerun()
+        addc[0].selectbox("➕ Adicionar conta à grade (plano de contas completo)", [""] + faltantes,
+                          format_func=lambda cc: "— selecione uma conta —" if cc == "" else f"{cc} · {contas_dict.get(cc, '')}",
+                          key=selkey,
+                          help="Todas as contas da base, em ordem. Escolha e clique em Adicionar para incluir na grade.")
+        addc[1].button("Adicionar conta", key=f"plan_add_btn_{uni_cod}_{cr_cod}", on_click=_plan_add)
         if not faltantes:
             st.caption("Todas as contas da base já estão na grade.")
     q = st.text_input("Filtrar conta (código ou nome) — opcional", key="plan_filtro")
@@ -3930,16 +3934,19 @@ def tela_qlp_gestor(c, prof, ano):
         faltantes = sorted([cod for cod in cargos_cat if cod not in set(membros)],
                            key=lambda cc: ((nomes.get(cc, cc) or "").lower(), cc))
         selkey = f"qlp_add_sel_{uni_cod}_{cr_cod}"
+
+        def _qlp_add(_mk=mkey, _sk=selkey):
+            s = st.session_state.get(_sk, "")
+            if s and s not in st.session_state.get(_mk, []):
+                st.session_state[_mk] = list(st.session_state.get(_mk, [])) + [s]
+            st.session_state[_sk] = ""  # limpa a seleção
+
         addc = st.columns([3.4, 1.1])
-        sel = addc[0].selectbox("➕ Adicionar cargo à grade (todos os cargos da empresa)", [""] + faltantes,
-                                format_func=lambda cc: "— selecione um cargo —" if cc == "" else f"{cc} · {nomes.get(cc, cc)}",
-                                key=selkey,
-                                help="Lista com todos os cargos existentes no sistema, em ordem alfabética. Jr/Pleno/Sr têm códigos próprios e aparecem separados. Escolha o que se aplica ao seu CR.")
-        if addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", disabled=(sel == "")):
-            if sel and sel not in membros:
-                st.session_state[mkey] = list(membros) + [sel]
-                st.session_state.pop(selkey, None)  # limpa a seleção (evita valor inválido após rerun)
-                st.rerun()
+        addc[0].selectbox("➕ Adicionar cargo à grade (todos os cargos da empresa)", [""] + faltantes,
+                          format_func=lambda cc: "— selecione um cargo —" if cc == "" else f"{cc} · {nomes.get(cc, cc)}",
+                          key=selkey,
+                          help="Lista com todos os cargos existentes no sistema, em ordem alfabética. Jr/Pleno/Sr têm códigos próprios e aparecem separados. Escolha o que se aplica ao seu CR.")
+        addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", on_click=_qlp_add)
         if not faltantes:
             st.caption("Todos os cargos conhecidos já estão na grade. Cargos novos entram na base pela importação de pessoal.")
 
