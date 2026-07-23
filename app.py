@@ -360,7 +360,7 @@ def _q_orc(tok, rtok, ano):
 @st.cache_data(ttl=300, show_spinner=False)
 def _q_cr_gestor(tok, rtok):
     cc = _cli_tok(tok, rtok)
-    return cc.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor(nome)").execute().data or []
+    return cc.table("cr_gestor").select("uni_cod, cr_cod, cr_nome, gestor_codigo, gestor(nome)").execute().data or []
 
 @st.cache_data(ttl=120, show_spinner=False)
 def _q_justif(tok, rtok, ano, mes):
@@ -585,6 +585,30 @@ def _q_cargos_todos(tok, rtok):
             pass
     return out
 def carregar_cargos_todos(): return _q_cargos_todos(*_tok())
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_cargos_por_cr(tok, rtok, uni, cr):
+    """Cargos que já existiram NESTE centro de resultado (hc_custo + hc_quadro), de qualquer ano.
+    Escopo por CR: o seletor de adicionar cargo não mistura cargos de outras áreas."""
+    cc = _cli_tok(tok, rtok)
+    out = {}
+    for tbl in ("hc_custo", "hc_quadro"):
+        try:
+            passo, ini = 1000, 0
+            while True:
+                lote = (cc.table(tbl).select("cargo_cod,cargo_nome").eq("uni_cod", uni).eq("cr_cod", cr)
+                        .range(ini, ini + passo - 1).execute().data or [])
+                for r in lote:
+                    k = r.get("cargo_cod")
+                    if k is not None:
+                        out.setdefault(str(k), (r.get("cargo_nome") or str(k)))
+                if len(lote) < passo:
+                    break
+                ini += passo
+        except Exception:
+            pass
+    return out
+def carregar_cargos_por_cr(uni, cr): return _q_cargos_por_cr(*_tok(), uni, cr)
 
 def get_plan_janela(c, ano):
     """Janela de preenchimento do orçamento do ano-alvo aberta? (default: fechada)"""
@@ -3366,18 +3390,15 @@ def tela_planejamento_gestor(c, prof, ano):
     ref = carregar_orc(ano - 1) or []
     orc_cur = carregar_orc(ano) or []
     uni_nome = {int(r["uni_cod"]): (r.get("unidade") or "") for r in (ref + orc_cur) if r.get("uni_cod") is not None}
-    # CRs do gestor a partir do CADASTRO (cr_gestor): todos os atribuídos, com ou sem movimento
+    # CRs do gestor a partir do CADASTRO (cr_gestor): SOMENTE os vinculados ao gestor logado
+    meu = str(prof.get("gestor_codigo"))
     crmap = {}
     for r in (carregar_cr_gestor() or []):
-        if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
+        if r.get("cr_cod") is not None and r.get("uni_cod") is not None and str(r.get("gestor_codigo")) == meu:
             crmap[(int(r["uni_cod"]), int(r["cr_cod"]))] = r.get("cr_nome", "") or ""
-    if not crmap:  # retrocompatível: se não houver cadastro, usa o que teve movimento
-        for r in ref:
-            if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
-                crmap.setdefault((int(r["uni_cod"]), int(r["cr_cod"])), r.get("cr_nome", "") or "")
     crs = sorted(crmap.keys())
     if not crs:
-        st.info("Você não tem centros de resultado cadastrados. Fale com a controladoria (cadastro de CRs por gestor).")
+        st.info("Você não tem centros de resultado vinculados. Fale com a controladoria (cadastro de CRs por gestor).")
         return
     # 1) Empresa  ->  2) Centro de resultado (da empresa escolhida)
     unis_disp = sorted({k[0] for k in crs})
@@ -3830,18 +3851,15 @@ def tela_qlp_gestor(c, prof, ano):
     ref = carregar_hc_quadro(ano - 1) or []
     cur_hc = carregar_hc_quadro(ano) or []
     uni_nome = {int(r["uni_cod"]): (r.get("unidade") or "") for r in (ref + cur_hc) if r.get("uni_cod") is not None}
-    # CRs do gestor a partir do CADASTRO (cr_gestor): Empresa > CR (com ou sem movimento)
+    # CRs do gestor a partir do CADASTRO (cr_gestor): SOMENTE os vinculados ao gestor logado
+    meu = str(prof.get("gestor_codigo"))
     crmap = {}
     for r in (carregar_cr_gestor() or []):
-        if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
+        if r.get("cr_cod") is not None and r.get("uni_cod") is not None and str(r.get("gestor_codigo")) == meu:
             crmap[(int(r["uni_cod"]), int(r["cr_cod"]))] = r.get("cr_nome", "") or ""
-    if not crmap:
-        for r in ref:
-            if r.get("cr_cod") is not None and r.get("uni_cod") is not None:
-                crmap.setdefault((int(r["uni_cod"]), int(r["cr_cod"])), r.get("cr_nome", "") or "")
     crs = sorted(crmap.keys())
     if not crs:
-        st.info("Você não tem centros de resultado cadastrados. Fale com a controladoria (cadastro de CRs por gestor).")
+        st.info("Você não tem centros de resultado vinculados. Fale com a controladoria (cadastro de CRs por gestor).")
         return
     unis_disp = sorted({k[0] for k in crs})
     cse = st.columns([1.2, 3])
@@ -3853,33 +3871,17 @@ def tela_qlp_gestor(c, prof, ano):
     cr_opt = cse[1].selectbox("2) Centro de resultado", crs_emp, format_func=lambda k: f"{k[1]} · {crmap[k]}", key="qlp_cr")
     uni_cod, cr_cod = cr_opt
     cr_nome = crmap[cr_opt]
-    # catálogo de cargos (para adicionar) + nomes conhecidos (catálogo + ano anterior + rascunho)
-    cat = carregar_hc_cargo()
-    # catálogo = histórico amplo de cargos: tabela de cargos + todos os cargos já vistos no
-    # headcount (ano atual e anterior, qualquer CR) + os já lançados no plano. Cada cargo é
-    # identificado pelo CÓDIGO, então Jr/Pleno/Sr (códigos distintos) são cargos distintos.
-    catalogo = {}
-    for x in (cat or []):
-        if x.get("cargo_cod") is not None and x.get("ativo", True):
-            catalogo[str(x["cargo_cod"])] = x.get("cargo_nome", "") or str(x["cargo_cod"])
-    for fonte in (carregar_hc_quadro(ano), carregar_hc_quadro(ano - 1),
-                  carregar_hc_custo(ano), carregar_hc_custo(ano - 1)):
-        for r in (fonte or []):
-            cc = r.get("cargo_cod")
-            if cc is not None:
-                catalogo.setdefault(str(cc), (r.get("cargo_nome") or str(cc)))
-    # todos os cargos já vistos no headcount de QUALQUER ano (não só ano/ano-1)
-    for cc, nm in (carregar_cargos_todos() or {}).items():
-        catalogo.setdefault(cc, nm)
+    # catálogo de cargos = cargos que já existiram NESTE CR (qualquer ano) + os já lançados no plano deste CR.
+    # Escopo por CR: evita cargos de outras áreas no seletor (ex.: logística não aparece na controladoria).
     plan_rows = carregar_qlp_plan(ano)
+    catalogo = dict(carregar_cargos_por_cr(uni_cod, cr_cod) or {})
     for r in plan_rows:
-        cc = r.get("cargo_cod")
-        if cc is not None:
-            catalogo.setdefault(str(cc), (r.get("cargo_nome") or str(cc)))
+        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
+            catalogo.setdefault(str(r["cargo_cod"]), (r.get("cargo_nome") or str(r["cargo_cod"])))
     cargos_cat = catalogo  # compatibilidade com o restante da função
     nomes = dict(catalogo)
     for r in ref:
-        if r.get("cargo_cod") is not None:
+        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
             nomes.setdefault(str(r["cargo_cod"]), r.get("cargo_nome", ""))
     for r in plan_rows:
         if r.get("cargo_cod") is not None:
