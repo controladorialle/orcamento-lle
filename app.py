@@ -563,6 +563,29 @@ def _q_hc_cargo(tok, rtok):
     except Exception: return []
 def carregar_hc_cargo(): return _q_hc_cargo(*_tok())
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _q_cargos_todos(tok, rtok):
+    """Todos os cargos já vistos no headcount (hc_custo + hc_quadro), de QUALQUER ano — para o
+    catálogo do QLP não ficar limitado a ano/ano-1. Paginado (lotes de 1000)."""
+    cc = _cli_tok(tok, rtok)
+    out = {}
+    for tbl in ("hc_custo", "hc_quadro"):
+        try:
+            passo, ini = 1000, 0
+            while True:
+                lote = cc.table(tbl).select("cargo_cod,cargo_nome").range(ini, ini + passo - 1).execute().data or []
+                for r in lote:
+                    k = r.get("cargo_cod")
+                    if k is not None:
+                        out.setdefault(str(k), (r.get("cargo_nome") or str(k)))
+                if len(lote) < passo:
+                    break
+                ini += passo
+        except Exception:
+            pass
+    return out
+def carregar_cargos_todos(): return _q_cargos_todos(*_tok())
+
 def get_plan_janela(c, ano):
     """Janela de preenchimento do orçamento do ano-alvo aberta? (default: fechada)"""
     try:
@@ -3845,6 +3868,9 @@ def tela_qlp_gestor(c, prof, ano):
             cc = r.get("cargo_cod")
             if cc is not None:
                 catalogo.setdefault(str(cc), (r.get("cargo_nome") or str(cc)))
+    # todos os cargos já vistos no headcount de QUALQUER ano (não só ano/ano-1)
+    for cc, nm in (carregar_cargos_todos() or {}).items():
+        catalogo.setdefault(cc, nm)
     plan_rows = carregar_qlp_plan(ano)
     for r in plan_rows:
         cc = r.get("cargo_cod")
