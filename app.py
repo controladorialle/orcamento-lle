@@ -3871,21 +3871,21 @@ def tela_qlp_gestor(c, prof, ano):
     cr_opt = cse[1].selectbox("2) Centro de resultado", crs_emp, format_func=lambda k: f"{k[1]} · {crmap[k]}", key="qlp_cr")
     uni_cod, cr_cod = cr_opt
     cr_nome = crmap[cr_opt]
-    # catálogo de cargos = cargos que já existiram NESTE CR (qualquer ano) + os já lançados no plano deste CR.
-    # Escopo por CR: evita cargos de outras áreas no seletor (ex.: logística não aparece na controladoria).
+    # Catálogo do seletor "Adicionar cargo" = TODOS os cargos já existentes no sistema
+    # (tabela de cargos + histórico de headcount de qualquer ano + planos). A grade COMEÇA com os
+    # cargos deste CR; o seletor permite trazer qualquer cargo da empresa (lista de seleção ordenada).
     plan_rows = carregar_qlp_plan(ano)
-    catalogo = dict(carregar_cargos_por_cr(uni_cod, cr_cod) or {})
+    catalogo = {}
+    for x in (carregar_hc_cargo() or []):
+        if x.get("cargo_cod") is not None and x.get("ativo", True):
+            catalogo[str(x["cargo_cod"])] = x.get("cargo_nome", "") or str(x["cargo_cod"])
+    for cc, nm in (carregar_cargos_todos() or {}).items():
+        catalogo.setdefault(cc, nm)
     for r in plan_rows:
-        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
+        if r.get("cargo_cod") is not None:
             catalogo.setdefault(str(r["cargo_cod"]), (r.get("cargo_nome") or str(r["cargo_cod"])))
     cargos_cat = catalogo  # compatibilidade com o restante da função
     nomes = dict(catalogo)
-    for r in ref:
-        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
-            nomes.setdefault(str(r["cargo_cod"]), r.get("cargo_nome", ""))
-    for r in plan_rows:
-        if r.get("cargo_cod") is not None:
-            nomes.setdefault(str(r["cargo_cod"]), r.get("cargo_nome", ""))
     stt = {(int(s["uni_cod"]), int(s["cr_cod"])): s.get("status", "RASCUNHO") for s in carregar_qlp_status(ano)}
     status = stt.get((uni_cod, cr_cod), "RASCUNHO")
     cor = {"RASCUNHO": CINZA_TXT, "ENVIADO": AZUL_CORP, "APROVADO": VERDE, "DEVOLVIDO": VERMELHO}.get(status, CINZA_TXT)
@@ -3931,10 +3931,10 @@ def tela_qlp_gestor(c, prof, ano):
                            key=lambda cc: ((nomes.get(cc, cc) or "").lower(), cc))
         selkey = f"qlp_add_sel_{uni_cod}_{cr_cod}"
         addc = st.columns([3.4, 1.1])
-        sel = addc[0].selectbox("➕ Adicionar cargo à grade (histórico de cargos)", [""] + faltantes,
+        sel = addc[0].selectbox("➕ Adicionar cargo à grade (todos os cargos da empresa)", [""] + faltantes,
                                 format_func=lambda cc: "— selecione um cargo —" if cc == "" else f"{cc} · {nomes.get(cc, cc)}",
                                 key=selkey,
-                                help="Todos os cargos já usados na empresa. Jr/Pleno/Sr têm códigos próprios e aparecem como cargos separados.")
+                                help="Lista com todos os cargos existentes no sistema, em ordem alfabética. Jr/Pleno/Sr têm códigos próprios e aparecem separados. Escolha o que se aplica ao seu CR.")
         if addc[1].button("Adicionar", key=f"qlp_add_btn_{uni_cod}_{cr_cod}", disabled=(sel == "")):
             if sel and sel not in membros:
                 st.session_state[mkey] = list(membros) + [sel]
