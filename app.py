@@ -3919,23 +3919,14 @@ def tela_qlp_gestor(c, prof, ano):
         # headcount por mês é uma quantidade pontual; o "total do ano" aqui é o pico do ano (máximo mensal)
         hist[cod]["total"] = max(hist[cod]["m"].values()) if hist[cod]["m"] else 0.0
 
-    # ----- membership da grade -----
-    # Se o CR JÁ tem plano lançado, a grade reflete o PLANO (respeita add/remove salvos).
-    # Se ainda não tem plano, a grade começa com a estrutura do histórico (ano-1).
+    # ----- membership da grade (SEM estado de sessão) -----
+    # Se o CR já tem plano lançado, a grade reflete o PLANO; senão, começa pela estrutura do histórico.
     plan_cods = [str(r["cargo_cod"]) for r in plan_rows
                  if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None]
     if plan_cods:
-        seed = sorted(set(plan_cods), key=lambda x: ((nomes.get(x, x) or "").lower(), x))
+        membros = sorted(set(plan_cods), key=lambda x: ((nomes.get(x, x) or "").lower(), x))
     else:
-        seed = sorted(set(str(cod) for cod in hist), key=lambda x: ((nomes.get(x, x) or "").lower(), x))
-    mkey = f"qlp_membros_{ano}_{uni_cod}_{cr_cod}"
-    if st.session_state.get("qlp_cr_ctx") != (ano, uni_cod, cr_cod):
-        st.session_state["qlp_cr_ctx"] = (ano, uni_cod, cr_cod)
-        st.session_state[mkey] = seed
-    membros = st.session_state.get(mkey)
-    if membros is None:
-        membros = seed
-        st.session_state[mkey] = membros
+        membros = sorted(set(str(cod) for cod in hist), key=lambda x: ((nomes.get(x, x) or "").lower(), x))
 
     # ----- adicionar cargo do catálogo/histórico à grade -----
     if editavel:
@@ -3948,12 +3939,27 @@ def tela_qlp_gestor(c, prof, ano):
             if not s:
                 st.session_state["qlp_add_msg"] = ("warn", "Nenhum cargo selecionado no seletor.")
                 return
-            if s in st.session_state.get(mkey, []):
+            if s in membros:
                 st.session_state["qlp_add_msg"] = ("warn", f"O cargo {s} já está na grade.")
                 st.session_state[selkey] = ""
                 return
-            st.session_state[mkey] = list(st.session_state.get(mkey, [])) + [s]
-            st.session_state["qlp_add_msg"] = ("ok", f"Cargo {s} · {nomes.get(s, s)} adicionado à grade. Preencha o headcount e salve.")
+            row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
+                   "cargo_cod": str(s), "cargo_nome": nomes.get(s, s), "atualizado_por": prof.get("nome", "")}
+            for mi in range(1, 13):
+                row[f"m{mi}"] = 0
+            try:
+                c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
+                # garante status do CR (para aparecer no controle) sem sobrescrever se já existir
+                try:
+                    c.table("qlp_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod,
+                                                       "status": (stt.get((uni_cod, cr_cod)) or "RASCUNHO"),
+                                                       "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
+                except Exception:
+                    pass
+                limpar_cache()
+                st.session_state["qlp_add_msg"] = ("ok", f"Cargo {s} · {nomes.get(s, s)} adicionado. Preencha o headcount e salve.")
+            except Exception as e:
+                st.session_state["qlp_add_msg"] = ("err", f"Falha ao gravar no qlp_plan: {e}")
             st.session_state[selkey] = ""
 
         addc = st.columns([3.4, 1.1])
@@ -3976,7 +3982,7 @@ def tela_qlp_gestor(c, prof, ano):
                 f"e remova marcando <b>Remover</b>. <b>Hist. {ano-1}</b> = pico de headcount do ano anterior (referência).</div>", unsafe_allow_html=True)
     if not cargos:
         st.caption("Nenhum cargo na grade ainda. Use o seletor acima para adicionar cargos do catálogo.")
-    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist, membros_key=mkey)
+    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist)
 
 def _consolidar_qlp(c, ano, uni, cr, cr_nome, plan_cr, ref):
     """Grava o QLP aprovado em hc_quadro[qtd_orcada] (12 linhas por cargo). Preserva qtd_realizada."""
@@ -4006,6 +4012,24 @@ def tela_qlp_ctrl(c, prof, ano):
                    f"<b style='color:{VERDE if aberta else VERMELHO}'>{'ABERTA' if aberta else 'FECHADA'}</b></div>", unsafe_allow_html=True)
     if jc[1].button(("🔒 Fechar janela" if aberta else "🔓 Abrir janela"), key="qlp_toggle", use_container_width=True):
         set_qlp_janela(c, ano, not aberta); st.rerun()
+    if st.button("🔄 Sincronizar cargos (catálogo da empresa)", key="qlp_sync_cargos",
+                 help="Preenche o catálogo de cargos com TODOS os cargos já vistos no headcount de qualquer CR/ano. "
+                      "Depois disso, os gestores passam a ver a empresa inteira no seletor de adicionar cargo."):
+        todos = carregar_cargos_todos() or {}   # controladoria enxerga todos os CRs
+        if not todos:
+            st.info("Nenhum cargo encontrado no headcount para sincronizar.")
+        else:
+            try:
+                existentes = {str(x["cargo_cod"]) for x in (carregar_hc_cargo() or []) if x.get("cargo_cod") is not None}
+                novos = [{"cargo_cod": k, "cargo_nome": v, "ativo": True} for k, v in todos.items() if k not in existentes]
+                for ch in chunks(novos, 500):
+                    c.table("hc_cargo").insert(ch).execute()
+                limpar_cache()
+                st.success(f"Catálogo sincronizado: {len(novos)} cargo(s) novo(s); {len(existentes)} já existiam. "
+                           "Os gestores já veem a empresa inteira no seletor.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Não foi possível sincronizar os cargos: {e}")
     st.divider()
 
     status_rows = carregar_qlp_status(ano)
