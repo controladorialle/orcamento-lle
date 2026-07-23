@@ -3282,23 +3282,22 @@ def _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, e
         gravou = 0; removidos = []
         for i, (cod, desc) in enumerate(contas):
             remover = bool(ed["Remover"].iloc[i]) if "Remover" in ed.columns else False
-            vals = {f"m{mi}": (0 if remover else round(float(ed[MABREV[mi]].iloc[i] or 0))) for mi in range(1, 13)}
+            if remover:
+                try:
+                    c.table("orc_plan").delete().eq("ano", ano).eq("uni_cod", uni_cod).eq("cr_cod", cr_cod).eq("conta_cod", int(cod)).execute()
+                except Exception:
+                    pass
+                removidos.append(int(cod))
+                continue
+            vals = {f"m{mi}": round(float(ed[MABREV[mi]].iloc[i] or 0)) for mi in range(1, 13)}
             tem_valor = any(v != 0 for v in vals.values())
             ja_existe = int(cod) in idx  # conta já lançada antes neste CR
             if not tem_valor and not ja_existe:
-                if remover:
-                    removidos.append(int(cod))
                 continue  # não cria linha zerada para conta nunca usada (mantém o orc_plan enxuto)
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                    "conta_cod": int(cod), "conta_desc": desc, "atualizado_por": prof.get("nome", ""), **vals}
             c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
             gravou += 1
-            if remover:
-                removidos.append(int(cod))
-        # tira as removidas da grade (session) — zerado = fora
-        if membros_key and removidos:
-            atual = st.session_state.get(membros_key, [])
-            st.session_state[membros_key] = [x for x in atual if int(x) not in set(removidos)]
         pend = []
         if enviar:
             try:
@@ -3451,26 +3450,27 @@ def tela_planejamento_gestor(c, prof, ano):
             k = (int(r.get("uni_cod", 0) or 0), int(r.get("cr_cod", 0) or 0), int(r["conta_cod"]))
             hist_tot[k] = hist_tot.get(k, 0.0) + float(r.get("valor_realizado") or 0)
 
-    # ----- grade em uso + adicionar conta (mesmo padrão do QLP) -----
-    saved_cods = {int(r["conta_cod"]) for r in plan_rows
-                  if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None}
-    seed = sorted(saved_cods | set(hist.keys()))
-    mkey_c = f"plan_membros_{ano}_{uni_cod}_{cr_cod}"
-    if st.session_state.get("plan_cr_ctx") != (ano, uni_cod, cr_cod):
-        st.session_state["plan_cr_ctx"] = (ano, uni_cod, cr_cod)
-        st.session_state[mkey_c] = seed
-    membros_c = st.session_state.get(mkey_c)
-    if membros_c is None:
-        membros_c = seed; st.session_state[mkey_c] = membros_c
+    # ----- grade em uso + adicionar conta (baseada no banco, igual ao QLP) -----
+    membros_c = sorted({int(r["conta_cod"]) for r in plan_rows
+                        if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("conta_cod") is not None}
+                       | set(hist.keys()))
     if editavel:
         faltantes = sorted([cod for cod, _ in contas_full if cod not in set(membros_c)])
         selkey = f"plan_add_sel_{uni_cod}_{cr_cod}"
 
-        def _plan_add(_mk=mkey_c, _sk=selkey):
-            s = st.session_state.get(_sk, "")
-            if s != "" and int(s) not in st.session_state.get(_mk, []):
-                st.session_state[_mk] = list(st.session_state.get(_mk, [])) + [int(s)]
-            st.session_state[_sk] = ""  # limpa a seleção
+        def _plan_add():
+            s = st.session_state.get(selkey, "")
+            if s != "" and int(s) not in set(membros_c):
+                row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
+                       "conta_cod": int(s), "conta_desc": contas_dict.get(int(s), ""), "atualizado_por": prof.get("nome", "")}
+                for mi in range(1, 13):
+                    row[f"m{mi}"] = 0
+                try:
+                    c.table("orc_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,conta_cod").execute()
+                    limpar_cache()
+                except Exception:
+                    pass
+            st.session_state[selkey] = ""
 
         addc = st.columns([3.4, 1.1])
         addc[0].selectbox("➕ Adicionar conta à grade (plano de contas completo)", [""] + faltantes,
@@ -3490,7 +3490,7 @@ def tela_planejamento_gestor(c, prof, ano):
                     f"Use <b>➕ Adicionar conta</b> (acima) para trazer qualquer conta da base ({len(contas_full)} no total) e "
                     f"<b>Remover</b> para tirar da grade. <b>Histórico {ano-1}</b> = realizado do ano anterior. "
                     f"Contas em zero não geram lançamento. Depois vá em “2) Justificativas por conta”.</div>", unsafe_allow_html=True)
-        _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist, membros_key=mkey_c)
+        _plan_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, contas, plan_rows, editavel, hist)
     else:
         secao_justif_orcamento(c, prof, ano, uni_cod, cr_cod, plan_rows, hist, editavel)
 
@@ -3819,17 +3819,18 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
         removidos = []
         for i, (cod, nome) in enumerate(cargos):
             remover = bool(ed["Remover"].iloc[i]) if "Remover" in ed.columns else False
+            if remover:
+                try:
+                    c.table("qlp_plan").delete().eq("ano", ano).eq("uni_cod", uni_cod).eq("cr_cod", cr_cod).eq("cargo_cod", str(cod)).execute()
+                except Exception:
+                    pass
+                removidos.append(str(cod))
+                continue
             row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
                    "cargo_cod": str(cod), "cargo_nome": nome, "atualizado_por": prof.get("nome", "")}
             for mi in range(1, 13):
-                row[f"m{mi}"] = 0 if remover else int(round(float(ed[MABREV[mi]].iloc[i] or 0)))
+                row[f"m{mi}"] = int(round(float(ed[MABREV[mi]].iloc[i] or 0)))
             c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
-            if remover:
-                removidos.append(str(cod))
-        # tira os removidos da grade (session) — regra: zerado = fora do quadro
-        if membros_key and removidos:
-            atual = st.session_state.get(membros_key, [])
-            st.session_state[membros_key] = [x for x in atual if str(x) not in set(removidos)]
         novo = "ENVIADO" if enviar else "RASCUNHO"
         c.table("qlp_plan_status").upsert({"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "status": novo,
                                            "atualizado_por": prof.get("nome", "")}, on_conflict="ano,uni_cod,cr_cod").execute()
@@ -3840,7 +3841,7 @@ def _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, ed
         else:
             msg = "Rascunho salvo."
         if removidos:
-            msg += f" {len(removidos)} cargo(s) removido(s) do quadro (zerados)."
+            msg += f" {len(removidos)} cargo(s) removido(s) do quadro."
         st.success(msg); st.rerun()
 
 def tela_qlp_gestor(c, prof, ano):
@@ -3914,20 +3915,13 @@ def tela_qlp_gestor(c, prof, ano):
         # headcount por mês é uma quantidade pontual; o "total do ano" aqui é o pico do ano (máximo mensal)
         hist[cod]["total"] = max(hist[cod]["m"].values()) if hist[cod]["m"] else 0.0
 
-    # ----- estrutura inicial da grade: cargos do ano anterior + cargos já lançados (com qtd > 0) -----
+    # ----- membership da grade = cargos com histórico (ano-1) + TODOS os já lançados no plano deste CR -----
+    # (baseada no banco, não em session_state — evita dessincronização ao adicionar/remover)
     base_cods = set(str(cod) for cod in hist)
     for r in plan_rows:
         if int(r.get("uni_cod", 0) or 0) == uni_cod and int(r.get("cr_cod", 0) or 0) == cr_cod and r.get("cargo_cod") is not None:
-            if any(int(round(float(r.get(f"m{mi}") or 0))) > 0 for mi in range(1, 13)):
-                base_cods.add(str(r["cargo_cod"]))
-    mkey = f"qlp_membros_{ano}_{uni_cod}_{cr_cod}"
-    # (re)inicializa a lista de cargos da grade ao trocar de CR/ano (ou no primeiro acesso)
-    if st.session_state.get("qlp_cr_ctx") != (ano, uni_cod, cr_cod):
-        st.session_state["qlp_cr_ctx"] = (ano, uni_cod, cr_cod)
-        st.session_state[mkey] = sorted(base_cods, key=lambda x: (len(x), x))
-    membros = st.session_state.get(mkey)
-    if membros is None:
-        membros = sorted(base_cods, key=lambda x: (len(x), x)); st.session_state[mkey] = membros
+            base_cods.add(str(r["cargo_cod"]))
+    membros = sorted(base_cods, key=lambda x: ((nomes.get(x, x) or "").lower(), x))
 
     # ----- adicionar cargo do catálogo/histórico à grade -----
     if editavel:
@@ -3935,11 +3929,19 @@ def tela_qlp_gestor(c, prof, ano):
                            key=lambda cc: ((nomes.get(cc, cc) or "").lower(), cc))
         selkey = f"qlp_add_sel_{uni_cod}_{cr_cod}"
 
-        def _qlp_add(_mk=mkey, _sk=selkey):
-            s = st.session_state.get(_sk, "")
-            if s and s not in st.session_state.get(_mk, []):
-                st.session_state[_mk] = list(st.session_state.get(_mk, [])) + [s]
-            st.session_state[_sk] = ""  # limpa a seleção
+        def _qlp_add():
+            s = st.session_state.get(selkey, "")
+            if s and s not in set(membros):
+                row = {"ano": ano, "uni_cod": uni_cod, "cr_cod": cr_cod, "cr_nome": cr_nome,
+                       "cargo_cod": str(s), "cargo_nome": nomes.get(s, s), "atualizado_por": prof.get("nome", "")}
+                for mi in range(1, 13):
+                    row[f"m{mi}"] = 0
+                try:
+                    c.table("qlp_plan").upsert(row, on_conflict="ano,uni_cod,cr_cod,cargo_cod").execute()
+                    limpar_cache()
+                except Exception:
+                    pass
+            st.session_state[selkey] = ""
 
         addc = st.columns([3.4, 1.1])
         addc[0].selectbox("➕ Adicionar cargo à grade (todos os cargos da empresa)", [""] + faltantes,
@@ -3958,7 +3960,7 @@ def tela_qlp_gestor(c, prof, ano):
                 f"e remova marcando <b>Remover</b>. <b>Hist. {ano-1}</b> = pico de headcount do ano anterior (referência).</div>", unsafe_allow_html=True)
     if not cargos:
         st.caption("Nenhum cargo na grade ainda. Use o seletor acima para adicionar cargos do catálogo.")
-    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist, membros_key=mkey)
+    _qlp_grid_frag(c, prof, ano, uni_cod, cr_cod, cr_nome, cargos, plan_rows, editavel, hist)
 
 def _consolidar_qlp(c, ano, uni, cr, cr_nome, plan_cr, ref):
     """Grava o QLP aprovado em hc_quadro[qtd_orcada] (12 linhas por cargo). Preserva qtd_realizada."""
