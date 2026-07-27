@@ -72,6 +72,16 @@ def inject_css():
       @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
       html, body, [class*="css"], .stApp {{ font-family:'Montserrat',sans-serif; }}
       .stApp {{ background:{CINZA_BG}; }}
+      /* ----- corrige "fonte branca" quando o navegador/OS está em tema escuro -----
+         o app usa fundos claros (cards/tabelas brancas); forçamos o texto escuro nessas áreas
+         para não ficar texto claro sobre fundo claro. Textos com cor própria não são afetados. */
+      .stApp, .block-container, .stApp p, .stApp li, .stApp label,
+      [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
+      [data-testid="stMarkdownContainer"] li, [data-testid="stMarkdownContainer"] span,
+      [data-testid="stCaptionContainer"], .stApp [data-testid="stWidgetLabel"] {{ color:{AZUL_PROFUNDO}; }}
+      table.lle td {{ color:{AZUL_PROFUNDO}; }}
+      .card, .card .val, .drow, .drow .nm {{ color:{AZUL_PROFUNDO}; }}
+      .stApp [data-testid="stDataFrame"] {{ color:{AZUL_PROFUNDO}; }}
       #MainMenu, footer, header[data-testid="stHeader"] {{ visibility:hidden; }}
       .block-container {{ padding-top:1.1rem; max-width:1360px; }}
       div.stButton>button[kind="primary"] {{ background:{AZUL_CORP}; border-color:{AZUL_CORP}; }}
