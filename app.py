@@ -721,17 +721,17 @@ def header(prof):
     papel = "Controladoria" if prof["papel"] == "controladoria" else "Gestor"
     st.markdown(f"""<div class="lle-header">
         <div class="lle-hl">{LOGO}<div>
-          <h1>Sistema de Acompanhamento Orçamentário — LLE Ferragens</h1>
-          <p>{prof['nome']}</p></div></div>
-        <div class="lle-badge">GRUPO LLE <span>—</span> {papel}</div></div>""", unsafe_allow_html=True)
+          <h1 style="color:#ffffff !important; font-size:20px; font-weight:700; margin:0; letter-spacing:-.3px;">Sistema de Acompanhamento Orçamentário — LLE Ferragens</h1>
+          <p style="color:rgba(255,255,255,.72) !important; font-size:12px; margin:3px 0 0; font-weight:500;">{prof['nome']}</p></div></div>
+        <div class="lle-badge" style="color:#ffffff !important;">GRUPO LLE <span style="color:{AMARELO} !important;">—</span> {papel}</div></div>""", unsafe_allow_html=True)
 
 def rodape():
     st.markdown(f"""<div class="lle-foot">
         <div style="display:flex; align-items:center; gap:12px;">{LOGO}
-          <div><div class="t">Sistema de Acompanhamento Orçamentário</div>
-          <div class="s">Controladoria · Grupo LLE Ferragens</div></div></div>
-        <div class="v"><div>Módulo Despesas · Orçado x Realizado</div>
-          <div style="opacity:.7; margin-top:3px;">Todos os direitos reservados</div></div></div>""", unsafe_allow_html=True)
+          <div><div class="t" style="color:#ffffff !important;">Sistema de Acompanhamento Orçamentário</div>
+          <div class="s" style="color:#B8C5D9 !important;">Controladoria · Grupo LLE Ferragens</div></div></div>
+        <div class="v" style="color:#B8C5D9 !important;"><div>Módulo Despesas · Orçado x Realizado</div>
+          <div style="opacity:.7; margin-top:3px; color:#B8C5D9 !important;">Todos os direitos reservados</div></div></div>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- blocos de insight
 def resumo_colunas(d_mes, d_ytd, banda, mes, ano):
