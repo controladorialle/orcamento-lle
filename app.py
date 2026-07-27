@@ -93,11 +93,11 @@ def inject_css():
         align-items:center; justify-content:space-between; margin-bottom:10px;
         box-shadow:0 4px 16px rgba(7,22,57,.15); }}
       .lle-hl {{ display:flex; align-items:center; gap:15px; }}
-      .lle-header h1 {{ color:#fff !important; font-size:20px; font-weight:700; margin:0; letter-spacing:-.3px; }}
-      .lle-header p {{ color:rgba(255,255,255,.72) !important; font-size:12px; margin:3px 0 0; font-weight:500; }}
-      .lle-badge {{ color:#fff !important; font-size:12px; font-weight:600; background:rgba(255,255,255,.12);
+      .stApp .lle-header h1 {{ color:#ffffff !important; font-size:20px; font-weight:700; margin:0; letter-spacing:-.3px; }}
+      .stApp .lle-header p {{ color:rgba(255,255,255,.72) !important; font-size:12px; margin:3px 0 0; font-weight:500; }}
+      .stApp .lle-badge {{ color:#ffffff !important; font-size:12px; font-weight:600; background:rgba(255,255,255,.12);
         border:1px solid rgba(255,255,255,.22); border-radius:20px; padding:6px 14px; white-space:nowrap; }}
-      .lle-badge span {{ color:{AMARELO} !important; }}
+      .stApp .lle-badge span {{ color:{AMARELO} !important; }}
       .modtag {{ font-size:18px; font-weight:700; color:{AZUL_PROFUNDO}; margin:2px 0 2px; }}
       .modsub {{ font-size:13px; color:{CINZA_TXT}; margin:0 0 8px; }}
 
