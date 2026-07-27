@@ -93,11 +93,11 @@ def inject_css():
         align-items:center; justify-content:space-between; margin-bottom:10px;
         box-shadow:0 4px 16px rgba(7,22,57,.15); }}
       .lle-hl {{ display:flex; align-items:center; gap:15px; }}
-      .lle-header h1 {{ color:#fff; font-size:20px; font-weight:700; margin:0; letter-spacing:-.3px; }}
-      .lle-header p {{ color:rgba(255,255,255,.72); font-size:12px; margin:3px 0 0; font-weight:500; }}
-      .lle-badge {{ color:#fff; font-size:12px; font-weight:600; background:rgba(255,255,255,.12);
+      .lle-header h1 {{ color:#fff !important; font-size:20px; font-weight:700; margin:0; letter-spacing:-.3px; }}
+      .lle-header p {{ color:rgba(255,255,255,.72) !important; font-size:12px; margin:3px 0 0; font-weight:500; }}
+      .lle-badge {{ color:#fff !important; font-size:12px; font-weight:600; background:rgba(255,255,255,.12);
         border:1px solid rgba(255,255,255,.22); border-radius:20px; padding:6px 14px; white-space:nowrap; }}
-      .lle-badge span {{ color:{AMARELO}; }}
+      .lle-badge span {{ color:{AMARELO} !important; }}
       .modtag {{ font-size:18px; font-weight:700; color:{AZUL_PROFUNDO}; margin:2px 0 2px; }}
       .modsub {{ font-size:13px; color:{CINZA_TXT}; margin:0 0 8px; }}
 
@@ -107,7 +107,7 @@ def inject_css():
       .side-logo {{ background:linear-gradient(135deg,{AZUL_PROFUNDO} 0%,{AZUL_CORP} 100%);
         border-radius:12px; padding:14px 16px; display:flex; align-items:center; gap:12px;
         margin-bottom:16px; box-shadow:0 3px 10px rgba(7,22,57,.18); }}
-      .side-logo-txt {{ color:#fff; font-weight:700; font-size:22px; letter-spacing:.5px; line-height:1; }}
+      .side-logo-txt {{ color:#fff !important; font-weight:700; font-size:22px; letter-spacing:.5px; line-height:1; }}
       .navsec {{ color:{CINZA_TXT}; font-size:13px; font-weight:700; letter-spacing:1.2px;
         text-transform:uppercase; margin:16px 4px 6px; }}
       [data-testid="stSidebar"] .stButton>button {{ justify-content:flex-start !important; text-align:left !important;
@@ -116,7 +116,10 @@ def inject_css():
       [data-testid="stSidebar"] .stButton>button > div {{ justify-content:flex-start !important; width:100%; }}
       [data-testid="stSidebar"] .stButton>button p {{ text-align:left !important; width:100%; margin:0; }}
       [data-testid="stSidebar"] .stButton>button:hover {{ background:{CINZA_BG}; color:{AZUL_PROFUNDO}; }}
-      [data-testid="stSidebar"] .stButton>button[kind="primary"] {{ background:{AZUL_CORP}; color:#fff; }}
+      [data-testid="stSidebar"] .stButton>button[kind="primary"] {{ background:{AZUL_CORP}; color:#fff !important; }}
+      [data-testid="stSidebar"] .stButton>button[kind="primary"] p,
+      [data-testid="stSidebar"] .stButton>button[kind="primary"] div,
+      [data-testid="stSidebar"] .stButton>button[kind="primary"] * {{ color:#fff !important; }}
       [data-testid="stSidebar"] .stButton>button[kind="primary"]:hover {{ background:{AZUL_PROFUNDO}; }}
       .side-user {{ font-size:15px; color:#1f2b45; margin:4px 4px; line-height:1.35; }}
       .side-user span {{ color:{CINZA_TXT}; font-size:13px; }}
@@ -124,7 +127,7 @@ def inject_css():
       /* tabs horizontais (barra navy + sublinhado dourado) */
       .stTabs [data-baseweb="tab-list"] {{ gap:2px; background:{AZUL_PROFUNDO}; padding:0 10px;
         border-radius:10px; margin-bottom:18px; box-shadow:0 3px 10px rgba(7,22,57,.14); }}
-      .stTabs [data-baseweb="tab"] {{ background:transparent; color:rgba(255,255,255,.72);
+      .stTabs [data-baseweb="tab"] {{ background:transparent; color:rgba(255,255,255,.72) !important;
         padding:13px 22px; font-weight:600; font-size:14px; border-bottom:3px solid transparent; }}
       .stTabs [data-baseweb="tab"]:hover {{ color:#fff; background:rgba(255,255,255,.05); }}
       .stTabs [aria-selected="true"] {{ color:{AMARELO} !important; background:transparent !important;
@@ -136,7 +139,7 @@ def inject_css():
       @media (max-width:820px) {{ .resumo {{ grid-template-columns:1fr; }} }}
       .rpanel {{ background:#fff; border:1px solid {LINHA}; border-radius:12px; overflow:hidden;
         box-shadow:0 2px 8px rgba(7,22,57,.05); }}
-      .rphead {{ background:{AZUL_PROFUNDO}; color:#fff; font-weight:700; font-size:13px;
+      .rphead {{ background:{AZUL_PROFUNDO}; color:#fff !important; font-weight:700; font-size:13px;
         letter-spacing:.04em; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; }}
       .rphead .tag {{ font-size:10px; font-weight:600; color:{AMARELO}; }}
       .rprow {{ display:flex; justify-content:space-between; align-items:center; padding:9px 16px;
@@ -159,7 +162,7 @@ def inject_css():
       /* tabelas */
       table.lle {{ border-collapse:collapse; width:100%; font-size:13px; background:#fff;
         border-radius:10px; overflow:hidden; }}
-      table.lle th {{ background:{AZUL_CORP}; color:#fff; padding:9px 12px; text-align:right; font-weight:600; }}
+      table.lle th {{ background:{AZUL_CORP}; color:#fff !important; padding:9px 12px; text-align:right; font-weight:600; }}
       table.lle th:first-child {{ text-align:left; }}
       table.lle td {{ padding:7px 12px; text-align:right; border-bottom:1px solid {LINHA}; font-variant-numeric:tabular-nums; }}
       table.lle td:first-child {{ text-align:left; }}
@@ -173,7 +176,7 @@ def inject_css():
       .drow {{ display:grid; grid-template-columns:3.1fr 1.5fr 1.5fr 1.5fr 0.9fr 1.5fr; gap:0;
         align-items:center; background:#fff; border:1px solid {LINHA}; border-radius:9px;
         padding:9px 14px; font-size:13px; margin-bottom:2px; }}
-      .drow.head {{ background:{AZUL_PROFUNDO}; color:#fff; font-weight:600; border:none; }}
+      .drow.head {{ background:{AZUL_PROFUNDO}; color:#fff !important; font-weight:600; border:none; }}
       .drow .r {{ text-align:right; font-variant-numeric:tabular-nums; }}
       .drow .nm {{ font-weight:600; color:{AZUL_PROFUNDO}; }}
       div[data-testid="column"] div.stButton>button {{ padding:2px 0; border:1px solid {LINHA};
@@ -182,9 +185,9 @@ def inject_css():
       /* rodapé */
       .lle-foot {{ margin-top:34px; padding:16px 22px; background:linear-gradient(135deg,{AZUL_PROFUNDO} 0%,{AZUL_CORP} 100%);
         border-radius:12px; display:flex; align-items:center; justify-content:space-between; }}
-      .lle-foot .t {{ color:#fff; font-weight:600; font-size:13px; }}
-      .lle-foot .s {{ color:#B8C5D9; font-size:11px; margin-top:3px; }}
-      .lle-foot .v {{ color:#B8C5D9; font-size:11px; text-align:right; }}
+      .lle-foot .t {{ color:#fff !important; font-weight:600; font-size:13px; }}
+      .lle-foot .s {{ color:#B8C5D9 !important; font-size:11px; margin-top:3px; }}
+      .lle-foot .v {{ color:#B8C5D9 !important; font-size:11px; text-align:right; }}
     </style>""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- helpers
