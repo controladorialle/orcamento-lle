@@ -119,7 +119,11 @@ def inject_css():
       [data-testid="stSidebar"] .stButton>button[kind="primary"] {{ background:{AZUL_CORP}; color:#fff !important; }}
       [data-testid="stSidebar"] .stButton>button[kind="primary"] p,
       [data-testid="stSidebar"] .stButton>button[kind="primary"] div,
-      [data-testid="stSidebar"] .stButton>button[kind="primary"] * {{ color:#fff !important; }}
+      [data-testid="stSidebar"] .stButton>button[kind="primary"] *,
+      [data-testid="stSidebar"] [data-testid="stBaseButton-primary"],
+      [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] p,
+      [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] * {{ color:#fff !important; }}
+      [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] {{ background:{AZUL_CORP} !important; }}
       [data-testid="stSidebar"] .stButton>button[kind="primary"]:hover {{ background:{AZUL_PROFUNDO}; }}
       .side-user {{ font-size:15px; color:#1f2b45; margin:4px 4px; line-height:1.35; }}
       .side-user span {{ color:{CINZA_TXT}; font-size:13px; }}
